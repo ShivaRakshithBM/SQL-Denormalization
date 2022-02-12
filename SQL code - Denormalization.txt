@@ -1,0 +1,1412 @@
+create temp table shpmt_detail
+partition by PICKUP_DATE
+cluster by SHPMT_INSTC_ID, PRCNG_AGRMT_INSTC_ID
+as
+    select
+           shpmt.SHPMT_INSTC_ID,
+           shpmt.PRO_NUMBER,
+           date(shpmt.PICKUP_DATE) PICKUP_DATE, -- To be used for partition
+           shpmt.DELIVERY_DATE,
+           shpmt.EST_DLVRY_DATE,
+           shpmt.REQUIRED_DLVRY_DT,
+           shpmt.OPERATION_BILL_DATE,
+           shpmt.ORIGIN_SIC_CODE,
+           shpmt.DESTINATION_SIC_CODE,
+           shpmt.DELIVERY_QUALIFIER,
+           -- Highway Subservice (HSS)
+           case when shpmt_hss.IS_SHPMT_HSS = 'Y' then 'Y' else 'N' end IS_SHPMT_HSS,
+           --  Override Stat Code
+           case when shpmt.SHP_SVC_OVRD_STAT = 'S' then 'S' else shpmt.SHP_SVC_STAT end SHP_SVC_STAT_ADJ,
+           case when shpmt.SHPMT_INSTC_ID = shpovrd.SHP_INST_ID then 'OVRD' else shpmt.SHP_SVC_STAT end SHP_SVC_STAT_OVRD,
+	   shpmt.SHP_SVC_OVRD_STAT_RSN_CD,
+	   shpmt.SHP_SVC_OVRD_SIC_CD,
+           --  Revenue Shipment Indicator
+           shpmt.BILL2_REL_CODE,
+           shpmt.BILL_CLASS_CD,
+           case when shpmt.BILL_CLASS_CD in ('A', 'C', 'D') then 'Y' else 'N' end IS_REV_SHPMT,
+           shpmt.CHARGE_TO_CD,
+           --  Shipment Delivered Indicator
+           case when shpmt.DELIVERY_QUALIFIER in ('Z') then 'Y' else 'N' end IS_SHPMT_DLVRD,
+           --  Shipment Failure Indicator
+           case when (case when shpmt.SHP_SVC_OVRD_STAT = 'S' then 'S' else shpmt.SHP_SVC_STAT end) ='F' then 'Y' else 'N' end IS_SHPMT_SVC_FAILED,
+           shpmt.PICKUP_REQUEST_SOURCE_CD,
+           --  Shipment Guarantee Indicator
+           shpmt.GUARANTEED_FLAG as IS_GUARANTEED,
+           shpmt.HAZMAT_FLAG as IS_HAZMAT,
+           shpmt.COLLECT_FLAG as IS_COLLECT,
+           shpmt.WARRANTY_IND as IS_WARRANTY,
+           shpmt.WARRANTY_FLAG,
+           shpmt.STANDARD_TRANSIT_DAYS,
+           shpmt.ACTUAL_TRANSIT_DAYS,
+           shpmt.CALC_SERVICE_TIMESTAMP,
+           shpmt.CALC_SERVICE_DAYS,
+           shpmt.LATE_TENDER_IND as IS_LATE_TENDER,
+           shpmt.SERVICE_CALC_STATUS_CD,
+           shpmt.BILL_DTTMSS,
+           shpmt.SHPR_TO_CONS_MILE,
+           shpmt.PRCNG_AGRMT_INSTC_ID,
+           shpmt.PRCNG_AGRMT_RULESET_NBR,
+           case when shprtar.RTAR is null then '000000' else shprtar.RTAR end RTAR,
+           shprtar.REMARK as RTAR_DESC,
+           shpmt.PPD_COLL_TYP,
+           shpmt.PREPAID_FLAG,
+           shpmt.COLLECT_FLAG,
+           debt_info.SHIPPER_DEBTOR_FLAG,
+           debt_info.CONSIGNEE_DEBTOR_FLAG,
+           debt_info.BILL2_DEBTOR_FLAG,
+           --  CUST_FOR_DIV_ID and DIV_CUST_TYPE is used to determine the pricing agreement customer division, one level below the pricing agreement customer
+           --  In case of multiple debtor flags and to level it at the shipment, the logic for the setup at the shipment level is as follows:
+           --       1. All SHIPPER_DEBTOR_FLAG = 'Y'
+           --       2. CONSIGNEE_DEBTOR_FLAG = 'Y'
+           --       3. BILL2_DEBTOR_FLAG = 'Y'
+           --       4. Eveything else is NULL
+           case
+                when debt_info.SHIPPER_DEBTOR_FLAG   = 'Y' then shpmt.SHIPPER_ID
+                when debt_info.CONSIGNEE_DEBTOR_FLAG = 'Y' then shpmt.CONSIGNEE_ID 
+                when debt_info.BILL2_DEBTOR_FLAG     = 'Y' then shpmt.BILL2_ID
+                else NULL
+            end as CUST_FOR_DIV_ID,
+           case
+                when debt_info.SHIPPER_DEBTOR_FLAG   = 'Y' then 'Shipper'
+                when debt_info.CONSIGNEE_DEBTOR_FLAG = 'Y' then 'Consignee'
+                when debt_info.BILL2_DEBTOR_FLAG     = 'Y' then 'Bill-To'
+                else NULL
+            end as DIV_CUST_TYPE,
+           shpmt.LT_TNDR_SHPMT_PKUP_DT_TM_LCL,
+           shpmt.AFTR_HR_SHPMT_PKUP_DTTMSS_LCL,
+           shpmt.SVC_STRT_DT SVC_STRT_DATE,
+           shpmt.PRO_DTL_URL_TXT,
+           shpmt.DMGD_PRO_IMG,
+           shpmt.EXEMPT_REASON_ID,
+           cldr.IS_COST_AVAIL as IS_SHPMT_CST,
+           gri.MIN_GRI_EFF_DATE as GRI_EFF_DATE,
+           -----------------------------------------------------------------------------------------------------------------
+           ---------------------------------------------kpi formula---------------------------------------------------------
+           -----------------------------------------------------------------------------------------------------------------
+    	     -- Net Revenue Formulas
+           ifnull(shpmt.TOTAL_CHARGE_AMOUNT,0)-ifnull(shpmt.EXCH_AMT,0)-ifnull(shpmt.INTRA_CNDN_AMT,0)-ifnull(shpmt.COD_AMT,0)-ifnull(shpmt.TOT_MX_NON_REV_AMT,0) NET_REVENUE,
+           ifnull(shpmt.DISCOUNT_AMOUNT,0) DISCOUNT_AMOUNT,
+           ifnull(shpmt.TOTAL_CHARGE_AMOUNT,0) TOTAL_CHARGE_AMOUNT,
+           ifnull(shpmt.EXCH_AMT,0)+ifnull(shpmt.INTRA_CNDN_AMT,0)+ifnull(shpmt.COD_AMT,0)+ifnull(shpmt.TOT_MX_NON_REV_AMT,0) NON_REVENUE,
+           ifnull(shpmt.EXCH_AMT,0) EXCH_AMT,
+           ifnull(shpmt.INTRA_CNDN_AMT,0) INTRA_CNDN_AMT,
+           ifnull(shpmt.COD_AMT,0) COD_AMT,
+           ifnull(shpmt.TOT_MX_NON_REV_AMT,0) TOT_MX_NON_REV_AMT,
+           shpmt.WEIGHT,
+           shpmt.TOTAL_USD_AMOUNT,
+           shpmt.SIC_MILES,
+           shpmt.TOTAL_VOLUME_CUBIC_FOOT,
+           shpmt.MOTORIZED_PIECES_COUNT,
+           shpmt.TOTAL_PIECES_COUNT,
+           shpmt.TOTAL_PALLETS_COUNT,
+           shpmt.LOOSE_PCE_CNT,
+           shpmt.PUP_VOL_PCT,
+           case
+                when shpmt.MOTORIZED_PIECES_COUNT = 0 then
+                     case
+                          when shpmt.TOTAL_PIECES_COUNT < ceil (shpmt.WEIGHT/350) then shpmt.TOTAL_PIECES_COUNT
+                          else ceil(shpmt.WEIGHT/350)
+                     end
+                else shpmt.MOTORIZED_PIECES_COUNT
+            end MOTOR_MOVES,
+           --  Columns to use for joins but not carry to the end (exclude)
+           shpmt.TARIFF_ID,
+           shpmt.SHIPPER_ID,
+           shpmt.CONSIGNEE_ID,
+           shpmt.BILL2_ID,
+           shpmt.GBQ_PARTITION_PICKUP_DATE,
+      from `PROJECT_NAME.FOLDER_NAME.SHIPMENT_TBL` shpmt
+      join `PROJECT_NAME.DERIVED_LAYER_NAME.PC_CALENDAR` cldr on date(cldr.CLDR_DATE) = date(shpmt.PICKUP_DATE)
+      join (select
+                   IND_GRI,
+                   min(date(CLDR_DATE)) as MIN_GRI_EFF_DATE,
+                   max(date(CLDR_DATE)) as MAX_GRI_EFF_DATE,
+              from `PROJECT_NAME.DERIVED_LAYER_NAME.PC_CALENDAR`
+             where CLDR_DATE between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(Current_Date(), interval 1 day)
+               and IND_GRI is not null
+          group by 1
+            ) gri on date(shpmt.PICKUP_DATE) between gri.MIN_GRI_EFF_DATE and gri.MAX_GRI_EFF_DATE
+           -- Shipment Override
+ left join `PROJECT_NAME.FOLDER_NAME.SHM_SVC_OVRD_RDS_TBL` shpovrd on shpovrd.SHP_INST_ID = shpmt.SHPMT_INSTC_ID 
+           -- Rating Tariff
+ left join `PROJECT_NAME.FOLDER_NAME.TARIFF_TBL` shprtar on shprtar.TARIFF_ID = shpmt.TARIFF_ID
+           -- Debtor Info
+ left join debtor_info debt_info on debt_info.SHP_INST_ID = shpmt.SHPMT_INSTC_ID
+           -- Highway Subservice Indicator
+ left join shpmt_hss on shpmt_hss.SHPMT_INSTC_ID = shpmt.SHPMT_INSTC_ID
+      -- Date range is the last 4 calendar pickup years plus year to date.  Need to include the delivery dates in the same time period picked up before the first pickup date in the range.
+     where shpmt.GBQ_PARTITION_PICKUP_DATE between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day)
+       and cldr.CLDR_DATE between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(Current_Date(), interval 1 day) 
+       and ((shpmt.GBQ_PARTITION_PICKUP_DATE between date_sub(date_trunc(current_date(), year), interval 4 year) and date_sub(current_date(), interval 1 day))
+           or (date(shpmt.GBQ_PARTITION_PICKUP_DATE) between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(date_sub(date_trunc(current_date(), year), interval 4 year), interval 1 day)
+               and date(shpmt.DELIVERY_DATE) >= date_sub(date_trunc(current_date(), year), interval 4 year)))
+;
+
+create temp table shpmt_to_use 
+as 
+    select
+           shpmt.SHPMT_INSTC_ID,
+           shpmt.GBQ_PARTITION_PICKUP_DATE,
+           shpmt.PICKUP_DATE,
+           shpmt.PRCNG_AGRMT_INSTC_ID,
+           shpmt.TARIFF_ID,
+           shpmt.SHIPPER_ID,
+           shpmt.CONSIGNEE_ID,
+           shpmt.BILL2_ID,
+           shpmt.ORIGIN_SIC_CODE,
+           shpmt.DESTINATION_SIC_CODE,
+           shpmt.EXEMPT_REASON_ID,
+           shpmt.SHIPPER_DEBTOR_FLAG,
+           shpmt.CONSIGNEE_DEBTOR_FLAG,
+           shpmt.BILL2_DEBTOR_FLAG,
+           shpmt.CUST_FOR_DIV_ID,
+           shpmt.DIV_CUST_TYPE,
+      from shpmt_detail shpmt;
+
+create temp table shpmt_cust 
+as
+    select
+           distinct CUSTOMER_ID
+      from (
+           select
+                  SHIPPER_ID as CUSTOMER_ID
+             from shpmt_to_use
+        union all  
+           select
+                  CONSIGNEE_ID as CUSTOMER_ID
+             from shpmt_to_use
+        union all 
+           select
+                  BILL2_ID as CUSTOMER_ID
+             from shpmt_to_use
+           )
+     ;
+
+create temporary table shpmt_cust_info
+as
+    select
+           cust.PRNT_CUSTOMER_ID,
+           cust.PRNT_CUSTOMER_NBR,
+           cust.PRNT_CUSTOMER_MAD_CODE,
+           cust.PRNT_CUSTOMER_NAME1,
+           cust.MAD_CODE_LVL2,
+           cust.MAD_CODE_LVL3, 
+
+           cust.CUSTOMER_ID,
+           cust.CUSTOMER_NBR,
+           cust.CUSTOMER_MAD_CODE,
+           cust.CUSTOMER_NAME1,
+           cust.CUSTOMER_ADDRESS,
+           cust.CUSTOMER_CITY,
+           cust.CUSTOMER_STATE,
+           cust.CUSTOMER_ZIP,
+           cust.CUSTOMER_ZIP3,
+           cust.CUSTOMER_LNGT_NBR,
+           cust.CUSTOMER_LATD_NBR,
+           cust.CUSTOMER_CNTRY,
+           cust.CUSTOMER_LVL,
+           sls_pstl_asgmnt_asis.SLS_EMP_NBR as SLS_EMP_NBR_ASIS
+      from cust_location as cust
+      join shpmt_cust as shpmt on shpmt.CUSTOMER_ID = cust.CUSTOMER_ID
+ left join `PROJECT_NAME.FOLDER_NAME.ONECRM_SLS_EMP_PSTL_CD_ASGMNT_TBL` as sls_pstl_asgmnt_asis
+        on sls_pstl_asgmnt_asis.PSTL_CD = cust.CUSTOMER_ZIP
+       and current_date() between date(sls_pstl_asgmnt_asis.SLS_EMP_PSTL_CD_EFF_DT) and date(sls_pstl_asgmnt_asis.EXPR_DT)
+  group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20; 
+
+create or replace table `PROJECT_NAME.DERIVED_LAYER_NAME.OUTPUT_TABLE_NAME`
+partition by PICKUP_DATE
+cluster BY PRCNG_AGRMT_INSTC_ID, PA_CUST_NBR, PA_SLS_EMP_NBR_ASIS, ORIGIN_SIC_CODE
+as
+
+with
+-- Create pass at shipment level using attributes to join in future passes
+shpmt_to_use as (
+    select
+           shpmt.SHPMT_INSTC_ID,
+           shpmt.GBQ_PARTITION_PICKUP_DATE,
+           shpmt.PICKUP_DATE,
+           shpmt.PRCNG_AGRMT_INSTC_ID,
+           shpmt.TARIFF_ID,
+           shpmt.SHIPPER_ID,
+           shpmt.CONSIGNEE_ID,
+           shpmt.BILL2_ID,
+           shpmt.ORIGIN_SIC_CODE,
+           shpmt.DESTINATION_SIC_CODE,
+           shpmt.EXEMPT_REASON_ID,
+           shpmt.SHIPPER_DEBTOR_FLAG,
+           shpmt.CONSIGNEE_DEBTOR_FLAG,
+           shpmt.BILL2_DEBTOR_FLAG,
+           shpmt.CUST_FOR_DIV_ID,
+           shpmt.DIV_CUST_TYPE,
+      from shpmt_detail shpmt
+),
+-- Pass to create the MIN and MAX to join tables to limit the number of records for:
+--    SHPMT_INSTC_ID, PICKUP_DATE
+shpmt_min_max as (
+    select 
+           min(SHPMT_INSTC_ID)    as MIN_SHPMT_INSTC_ID,
+           max(SHPMT_INSTC_ID)    as MAX_SHPMT_INSTC_ID,
+           min(date(PICKUP_DATE)) as MIN_PICKUP_DATE,
+           max(date(PICKUP_DATE)) as MAX_PICKUP_DATE,
+      from shpmt_to_use
+),
+-- As Entered Shipper and Consignee
+shpmt_as_entrd as (
+    select
+           asentrd.SHPMT_INSTC_ID,
+           shpr.CUSTOMER_MAD_CODE    as AS_ENTRD_SHPR_MAD_CODE,
+           asentrd.SHIPPER_NAME      as AS_ENTRD_SHPR_NAME,
+           asentrd.SHIPPER_ADDRESS   as AS_ENTRD_SHPR_ADDRESS,
+           asentrd.SHIPPER_CITY      as AS_ENTRD_SHPR_CITY,
+           asentrd.SHIPPER_STATE     as AS_ENTRD_SHPR_ST,
+           asentrd.SHIPPER_COUNTRY   as AS_ENTRD_SHPR_CTRY,
+           asentrd.SHIPPER_ZIP6      as AS_ENTRD_SHPR_ZIP6,
+           cons.CUSTOMER_MAD_CODE    as AS_ENTRD_CONS_MAD_CODE,
+           asentrd.CONSIGNEE_NAME    as AS_ENTRD_CONS_NAME,
+           asentrd.CONSIGNEE_ADDRESS as AS_ENTRD_CONS_ADDRESS,
+           asentrd.CONSIGNEE_CITY    as AS_ENTRD_CONS_CITY,
+           asentrd.CONSIGNEE_STATE   as AS_ENTRD_CONS_ST,
+           asentrd.CONSIGNEE_COUNTRY as AS_ENTRD_CONS_CTRY,
+           asentrd.CONSIGNEE_ZIP6    as AS_ENTRD_CONS_ZIP6,
+           bill2.CUSTOMER_MAD_CODE   as AS_ENTRD_BILL2_MAD_CODE,
+           asentrd.BILL2_NAME        as AS_ENTRD_BILL2_NAME,
+           asentrd.BILL2_ADDRESS     as AS_ENTRD_BILL2_ADDRESS,
+           asentrd.BILL2_CITY        as AS_ENTRD_BILL2_CITY,
+           asentrd.BILL2_STATE       as AS_ENTRD_BILL2_ST,
+           asentrd.BILL2_COUNTRY     as AS_ENTRD_BILL2_CTRY,
+           asentrd.BILL2_ZIP6        as AS_ENTRD_BILL2_ZIP6,
+      from `PROJECT_NAME.FOLDER_NAME.AS_ENTERED_CUSTOMER_TBL` asentrd
+      join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = asentrd.SHPMT_INSTC_ID
+ left join shpmt_cust_info shpr  on shpr.CUSTOMER_ID  = asentrd.SHIPPER_ID
+ left join shpmt_cust_info cons  on cons.CUSTOMER_ID  = asentrd.CONSIGNEE_ID
+ left join shpmt_cust_info bill2 on bill2.CUSTOMER_ID = asentrd.BILL2_ID
+     where asentrd.GBQ_PARTITION_PICKUP_DATE between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day)
+),
+--  Pricing Agreement customer information with Active Indicator 'Y' for the pricing agreement dates
+shpmt_pa_cust as (
+    select
+           shpmt.PRCNG_AGRMT_INSTC_ID   as PRCNG_AGRMT_INSTC_ID,
+           cust.PRNT_CUSTOMER_MAD_CODE  as PA_PRNT_CUST_MAD_CODE,
+           cust.PRNT_CUSTOMER_NAME1     as PA_PRNT_CUST_NAME1,
+           cust.CUSTOMER_ID             as PA_CUST_ID,
+           cust.CUSTOMER_NATL_ACCT_IND  as PA_CUST_NAT_ACCT_IND,
+           cust.CUSTOMER_MAD_CODE       as PA_CUST_MAD_CODE,
+           cust.CUSTOMER_NAME1          as PA_CUST_NAME1,
+           cust.CUSTOMER_CITY           as PA_CUST_CITY,
+           cust.CUSTOMER_STATE          as PA_CUST_STATE,
+           cust.CUSTOMER_ZIP            as PA_CUST_ZIP,
+           cust.CUSTOMER_CNTRY          as PA_CUST_CNTRY,
+           cust.CUSTOMER_LVL            as PA_CUST_LVL,
+           pra.NEG_CUST_NBR             as PA_CUST_NBR,
+           pra.CUST_AGRMT_SFX_NBR       as PA_CUST_SFX_NBR,
+           pra.CUST_AGRMT_VER_NBR       as PA_CUST_VERS_NBR,
+           date(pra.PRCNG_AGRMT_EFF_DT) as PA_CUST_VERS_EFF_DATE,
+           case
+--                when pra3pl.CUST_TYP_CD in ('B') then '3PL BROKER'
+--                when pra3pl.CUST_TYP_CD in ('T') then '3PL CSP'
+-- Update on 3/22/2021 for chagne of CUST_TYP_CDE
+                when pra3pl.CUST_TYP_CD in ('C') then '3PL CSP'
+                when pra3pl.CUST_TYP_CD in ('T') then '3PL BROKER'
+                else 'DIRECT'
+            end PA_CUST_3PL_VERS_IND,
+            pra.SUGG_RENEG_DT          as PA_CUST_VERS_RENEG_DT 
+      from `PROJECT_NAME.FOLDER_NAME.PRA_PRICING_AGREEMENT_TBL` pra
+      join (select PRCNG_AGRMT_INSTC_ID from shpmt_to_use group by 1) shpmt on shpmt.PRCNG_AGRMT_INSTC_ID = pra.PRCNG_AGRMT_INSTC_NBR
+ left join cust_location cust on cust.CUSTOMER_ID = pra.NEG_CUST_FRT_ROL_ID
+      -- 3PL Indicator taken from the ACTV_IND = 'Y' on the nbr-sfx-vers.  Some have 'N' for all instances of nbr-sfx-vers.  The CUST_YTP_CD is taken from the MAX PRCNG_AGRMT_INSTC_NBR
+ left join (
+           select
+                 (((NEG_CUST_NBR * 1000) + CUST_AGRMT_SFX_NBR) * 100) + CUST_AGRMT_VER_NBR PA_CUST_NBR_SFX_VERS,
+                 CUST_TYP_CD,
+            from `PROJECT_NAME.FOLDER_NAME.PRA_PRICING_AGREEMENT_TBL` pra
+           where ACTV_IND = 'Y'
+        group by 1,2
+
+       union all
+      -- Zero NBR-SFX-VERS has an ACTV_IND = 'Y' - take the MAX PRCNG_AGRMT_INSTC_NBR and get the CUST_TYP_CD from that join
+          select
+                 pra_no.PA_CUST_NBR_SFX_VERS,
+                 pra.CUST_TYP_CD,
+            from (
+                 select
+                        (((NEG_CUST_NBR * 1000) + CUST_AGRMT_SFX_NBR) * 100) + CUST_AGRMT_VER_NBR PA_CUST_NBR_SFX_VERS,
+                        max(PRCNG_AGRMT_INSTC_NBR) as MAX_PRCNG_AGRMT_INSTC_NBR,
+                        max(ACTV_IND)              as MAX_ACTV_IND,
+                  from `PROJECT_NAME.FOLDER_NAME.PRA_PRICING_AGREEMENT_TBL`
+              group by NEG_CUST_NBR, CUST_AGRMT_SFX_NBR, CUST_AGRMT_VER_NBR
+                having MAX_ACTV_IND = 'N'
+                 ) pra_no
+             join `PROJECT_NAME.FOLDER_NAME.PRA_PRICING_AGREEMENT_TBL` pra on pra.PRCNG_AGRMT_INSTC_NBR = pra_no.MAX_PRCNG_AGRMT_INSTC_NBR
+           ) pra3pl on  pra3pl.PA_CUST_NBR_SFX_VERS = (((pra.NEG_CUST_NBR * 1000) + pra.CUST_AGRMT_SFX_NBR) * 100) + pra.CUST_AGRMT_VER_NBR
+) ,
+-- Add the next customer level to the Pricing Agreement Customer for the Division
+shpmt_pa_cust_div as (
+    select
+           pacust.PRCNG_AGRMT_INSTC_ID,
+           pacust.PA_CUST_ID,
+           custh.C_CUSTOMER_ID as PA_CUST_DIV_ID,
+           custh.C_MAD_CODE    as PA_CUST_DIV_MAD_CODE,
+           custh.C_NAME1       as PA_CUST_DIV_NAME1,
+           custh.CHILD_LEVEL   as PA_CUST_DIV_LVL,
+      from shpmt_pa_cust pacust
+ left join customer_hierarchy custh
+        on pacust.PA_CUST_ID = custh.P_CUSTOMER_ID
+       and custh.CHILD_LEVEL = pacust.PA_CUST_LVL + 1
+     where custh.CHILD_LEVEL >= 3
+       and custh.PARENT_LEVEL >= 2
+),
+shpmt_pa_cust_div_all as (
+    select
+           pacustdiv.*,
+           custh.C_CUSTOMER_ID    as LOC_CUST_ID,
+      from shpmt_pa_cust_div pacustdiv
+ left join customer_hierarchy custh
+        on pacustdiv.PA_CUST_DIV_ID = custh.P_CUSTOMER_ID
+       and custh.CHILD_LEVEL >= pacustdiv.PA_CUST_DIV_LVL
+     where custh.CHILD_LEVEL >= 3
+       and custh.PARENT_LEVEL >= 3
+  group by 1,2,3,4,5,6,7
+),
+shpmt_div as (
+    select
+           shpmt.PRCNG_AGRMT_INSTC_ID,
+           shpmt.CUST_FOR_DIV_ID,
+           pacustdivall.PA_CUST_DIV_ID,
+           pacustdivall.PA_CUST_DIV_MAD_CODE,
+           pacustdivall.PA_CUST_DIV_NAME1,
+           pacustdivall.PA_CUST_DIV_LVL,
+      from (select PRCNG_AGRMT_INSTC_ID, CUST_FOR_DIV_ID from shpmt_to_use group by 1, 2) shpmt
+      join shpmt_pa_cust_div_all pacustdivall
+        on pacustdivall.PRCNG_AGRMT_INSTC_ID = shpmt.PRCNG_AGRMT_INSTC_ID
+       and pacustdivall.LOC_CUST_ID = shpmt.CUST_FOR_DIV_ID
+),
+--  Operations SIC Codes to get District and Region - do a group by on the origin and destinaiton SIC's
+shpmt_sic as (
+    select
+           shpmtsic.SIC_CODE              as SIC_CODE,
+           sic.TERMINAL_NAME              as SIC_NAME,
+           sic.LOC_CLASS_SIZE             as SIC_CLASS_SIZE,
+           sic.SHIP_CITY                  as SIC_CITY,
+           sic.SHIP_STATE                 as SIC_STATE,
+           opsflatten.LVL3_SIC_CD         as SIC_TERM_CODE,
+           opsflatten.LVL3_SIC_NM         as SIC_TERM_NAME,
+           sicterm.SHIP_CITY              as SIC_TERM_CITY,
+           sicterm.SHIP_STATE             as SIC_TERM_STATE,
+           opsflatten.LVL3_SIC_CLASS_SIZE as SIC_TERM_CLASS_SIZE,
+           opsflatten.LVL2_NM,
+           opsflatten.LVL1_NM, 
+     from (
+          select distinct SIC_CODE
+            from (
+                 select ORIGIN_SIC_CODE SIC_CODE
+                   from shpmt_to_use
+
+               union all
+
+                  select DESTINATION_SIC_CODE SIC_CODE
+                    from shpmt_to_use
+            )
+            group by 1
+     ) shpmtsic
+ left join `PROJECT_NAME.FOLDER_NAME.SIC_MASTER_REF_TBL` sic on sic.LOC_SIC_SLT = shpmtsic.SIC_CODE
+ left join `PROJECT_NAME.FOLDER_NAME.LOC_OPS_HIERARCHY_FLATTEN_TBL` opsflatten on opsflatten.LVL5_SIC_CD = shpmtsic.SIC_CODE
+ left join `PROJECT_NAME.FOLDER_NAME.SIC_MASTER_REF_TBL` sicterm on sicterm.LOC_SIC_SLT = opsflatten.LVL3_SIC_CD
+),
+-- Shipment Discount and AMC
+shpmt_rtg as (
+    select
+           shpmt.SHPMT_INSTC_ID,
+           case when shprtg.ABS_MIN_CHG_IND is null then 'N' else shprtg.ABS_MIN_CHG_IND end as IS_SHPMT_AMC,
+           case when shprtg.MANL_RATED_IND = 'Y' then 'Y' else 'N' end as IS_SHPMT_MANL_RATED,
+           shprtg.APPLCBL_DISC_PCT as DSCNT_APLCBL_PCT,
+           shprtg.ACTL_DSCT_PCT as DSCNT_ACTL_PCT,
+           shprtg.LNHL_CHG_AMT,
+           shprtg.TOT_DSCNT_AMT as DSCNT_AMT,
+           shprtg.SHPR_AGRMT_ID,
+           shprtg.SHPR_RULESET_NBR,
+           shprtg.CONS_AGRMT_ID,
+           shprtg.CONS_RULESET_NBR,
+           shprtg.BILTO_AGRMT_ID,
+           shprtg.BILTO_RULESET_NBR,
+--  Get example of the join with shpmt_min_max for better explanation.
+      from `PROJECT_NAME.FOLDER_NAME.SHM_RTG_INFO_RDS_TBL` shprtg
+      join shpmt_min_max minmax on shprtg.SHP_INST_ID between minmax.MIN_SHPMT_INSTC_ID and minmax.MAX_SHPMT_INSTC_ID
+      join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = shprtg.SHP_INST_ID
+     where shprtg.GBQ_PARTITION_PKUP_DT between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day)
+),
+-- Obtain the shipment OBI information using the OBI_STAT_CD = 'D'.  Seperate pass due to grouping to level to shipment.
+shpmt_obi as (
+    select 
+           shpmtobi.SHPMT_INSTC_ID,
+           'Y' IS_OBI_SHPMT,
+           sum(coalesce(shpmtobi.DSCNT_AMT,0)) + sum(coalesce(shpmtobi.ADJ_AMT,0)) as OBI_AMT
+      from shpmt_to_use shpmt 
+      join `PROJECT_NAME.FOLDER_NAME.OBI_INCENTIVE_SHIPMENT_TBL` shpmtobi on shpmtobi.SHPMT_INSTC_ID = shpmt.SHPMT_INSTC_ID
+     where shpmtobi.OBI_SHPMT_STAT_CD in ('D')
+       and shpmtobi.GBQ_PARTITION_PKUP_DT between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day)
+  group by 1, 2
+),
+--  Shipment Costing Information
+shpmt_cost as (
+    select
+           cst.SHPMT_INSTC_ID,
+           'Y' as IS_SHPMT_CST,
+           ifnull(cst.TOT_DIR_CST,0) TOT_DIR_CST,
+           ifnull(cst.TOT_OVHD_CST,0) TOT_OVHD_CST,
+           ifnull(cst.TOT_DIR_CST,0) + ifnull(cst.TOT_OVHD_CST,0) TOT_COST,
+           cst.DNSTY_SRC_CD,
+           cstdnsty.DNSTY_SRC_DESC,
+           ifnull(cst.DNSTY_QTY,0) DNSTY_QTY,
+      from shpmt_to_use shpmt 
+      join `PROJECT_NAME.FOLDER_NAME.CST_COST_TBL` cst on cst.SHPMT_INSTC_ID = shpmt.SHPMT_INSTC_ID
+ left join `PROJECT_NAME.FOLDER_NAME.CST_DENSITY_SOURCE_TBL` cstdnsty on cst.DNSTY_SRC_CD = cstdnsty.DNSTY_SRC_CD
+       where cst.GBQ_PARTITION_PER_CD >= date_sub(date_trunc(current_date(), year), interval 5 year)
+),
+-- Accessorial Information needed at the shipment level.  Note not all accessorail codes will be captured here.  Only those identified as high priority (FSC, TLF, ELS, XSS, HCD).
+shpmt_accsrl as (
+    select 
+           shpmt.SHPMT_INSTC_ID,
+           count(accsrl.ACCESSORIAL_ID)                                                                                                   as ACCSRL_NUM,
+           sum(accsrl.ACCESSORIAL_AMOUNT)                                                                                                 as ACCSRL_REV,
+           -- Fuel Surcharge - FSC, TLF
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE in ('FSC', 'TLF') then accsrl.ACCESSORIAL_AMOUNT else 0 end)                 as ACCSRL_FSC_REV,
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE in ('FSC', 'TLF') then 1 else 0 end)                                         as ACCSRL_FSC_NUM,
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('TLF') then 'Y' else null end)                                           as IS_ACCSRL_VSP,
+           -- Non Fuel Surcharge - not in FSC, TLF
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE not in ('FSC', 'TLF') then accsrl.ACCESSORIAL_AMOUNT else 0 end)             as ACCSRL_NONFSC_REV,
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE not in ('FSC', 'TLF') then 1 else 0 end)                                     as ACCSRL_NONFSC_NUM,
+           sum(case when (accsrlcode.GENERIC_ACCESSORIAL_CODE not in ('FSC', 'TLF') and accsrl.ACCESSORIAL_AMOUNT = 0) then 1 else 0 end) as ACCSRL_NONFSC_NUM_WVD,
+           -- Extra Long Shipment - ELS
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('ELS') then accsrl.ACCESSORIAL_AMOUNT else 0 end)                        as ACCSRL_ELS_REV,
+           sum(case when (accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('ELS') and accsrl.ACCESSORIAL_AMOUNT = 0) then 1 else 0 end)            as ACCSRL_ELS_NUM_WVD,
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('ELS') then 'Y' else null end) IS_ACCSRL_ELS,
+           -- High Cost Delivery - HCD
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('HCD') then accsrl.ACCESSORIAL_AMOUNT else 0 end)                        as ACCSRL_HCD_REV,
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('HCD') then 'Y' else null end)                                           as IS_ACCSRL_HCD,
+          -- Dynamic Pricing - XSS
+           sum(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('XSS') then accsrl.ACCESSORIAL_AMOUNT else 0 end)                        as ACCSRL_XSS_REV,
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('XSS') then 'Y' else null end)                                           as IS_ACCSRL_XSS,
+           -- Lineal Foot
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('XLF') then 'Y' else null end)                                           as IS_ACCSRL_XLF,
+           -- Banyan Shipment
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('LLS') then 'Y' else null end)                                           as IS_ACCSRL_LLS,
+	      max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('TLF') then 'Y' else null end)                                           as IS_SHPMT_VSP,
+           max(case when accsrlcode.GENERIC_ACCESSORIAL_CODE IN ('DTD','MIX','MEX','DRA') then 'Y' else null end)                         as IS_MEX_SHP
+      from `PROJECT_NAME.FOLDER_NAME.ACCESSORIAL_TBL` accsrl
+	 join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = accsrl.SHPMT_INSTC_ID
+	 join `PROJECT_NAME.FOLDER_NAME.ACCESSORIAL_CODE_TBL` accsrlcode ON accsrl.ACCESSORIAL_CODE_ID = accsrlcode.ACCESSORIAL_CODE_ID
+      where date(accsrl.GBQ_PARTITION_PICKUP_DATE) between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day)
+  group by 1
+),
+--  Shipment rating pass information from the rating pass table using type codes '1', '2', '3', '5', '6', '9', 'A'
+shpmt_rtg_pass as (
+    select 
+           rtgpass.SHPMT_INSTC_ID,
+           -- INV - Invoice
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.TOT_CHRG_AMT   else 0    end) RP_INV_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.LNH_CHRG_AMT   else 0    end) RP_INV_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.DSCNT_AMT      else 0    end) RP_INV_DSCNT_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.FSC_AMT        else 0    end) RP_INV_FSC_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.TOT_ACCSRL_AMT else 0    end) RP_INV_TOT_ACCSRL_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.RTG_TRF_NM     else null end) RP_INV_RTG_TRF_NM,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.FSC_TRF_NM     else null end) RP_INV_FSC_TRF_NM,
+           -- CORP - As Was 
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('2') then rtgpass.TOT_CHRG_AMT   else 0 end) RP_CORP_AS_WAS_TOT_CHRG_AMT,   
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('2') then rtgpass.LNH_CHRG_AMT   else 0 end) RP_CORP_AS_WAS_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('2') then rtgpass.FSC_AMT        else 0 end) RP_CORP_AS_WAS_FSC_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('2') then rtgpass.TOT_ACCSRL_AMT else 0 end) RP_CORP_AS_WAS_TOT_ACCSRL_AMT,
+           -- CORP - Corporate
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('3') then rtgpass.TOT_CHRG_AMT   else 0 end) RP_CORP_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('3') then rtgpass.LNH_CHRG_AMT   else 0 end) RP_CORP_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('3') then rtgpass.FSC_AMT        else 0 end) RP_CORP_FSC_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('3') then rtgpass.TOT_ACCSRL_AMT else 0 end) RP_CORP_TOT_ACCSRL_AMT,           
+           -- RENO - Renegotiation Impact (Effective 5/24/2021)
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.TOT_CHRG_AMT   else 0    end) RP_RENO_IMPCT_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.LNH_CHRG_AMT   else 0    end) RP_RENO_IMPCT_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.DSCNT_AMT      else 0    end) RP_RENO_IMPCT_DSCNT_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.FSC_AMT        else 0    end) RP_RENO_IMPCT_FSC_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.TOT_ACCSRL_AMT else 0    end) RP_RENO_IMPCT_TOT_ACCSRL_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.RTG_TRF_NM     else null end) RP_RENO_IMPCT_RTG_TRF_NM,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('4') and shpmt.PICKUP_DATE >= '2021-05-24' then rtgpass.FSC_TRF_NM     else null end) RP_RENO_IMPCT_FSC_TRF_NM,
+           --  NO FAK Override
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('5') then rtgpass.TOT_CHRG_AMT   else 0 end) RP_NO_FAK_OVRD_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('5') then rtgpass.LNH_CHRG_AMT   else 0 end) RP_NO_FAK_OVRD_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('5') then rtgpass.DSCNT_AMT      else 0 end) RP_NO_FAK_OVRD_DSCNT_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('5') then rtgpass.FSC_AMT        else 0 end) RP_NO_FAK_OVRD_FSC_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('5') then rtgpass.TOT_ACCSRL_AMT else 0 end) RP_NO_FAK_TOT_ACCSRL_AMT,           
+           --  FAK Override
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('6') then rtgpass.TOT_CHRG_AMT   else 0 end) RP_FAK_OVRD_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('6') then rtgpass.LNH_CHRG_AMT   else 0 end) RP_FAK_OVRD_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('6') then rtgpass.DSCNT_AMT      else 0 end) RP_FAK_OVRD_DSCNT_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('6') then rtgpass.FSC_AMT        else 0 end) RP_FAK_OVRD_FSC_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('6') then rtgpass.TOT_ACCSRL_AMT else 0 end) RP_FAK_TOT_ACCSRL_AMT,           
+           --  GRI Pass 9
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('9') then rtgpass.TOT_CHRG_AMT   else 0 end) RP_GRI_9_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('9') then rtgpass.LNH_CHRG_AMT   else 0 end) RP_GRI_9_LNH_CHRG_AMT,		
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('9') then rtgpass.DSCNT_AMT      else 0 end) RP_GRI_9_DSCNT_AMT,
+           --  GRI Pass A
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('A') then rtgpass.TOT_CHRG_AMT   else 0 end) RP_GRI_A_TOT_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('A') then rtgpass.LNH_CHRG_AMT   else 0 end) RP_GRI_A_LNH_CHRG_AMT,
+           max(case when rtgpass.RTG_PASS_TYP_CD in ('A') then rtgpass.DSCNT_AMT      else 0 end) RP_GRI_A_DSCNT_AMT,
+           -- Retention100
+           round(safe_divide( max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.FSC_AMT else 0 end)
+                        ,(safe_divide( max(case when rtgpass.RTG_PASS_TYP_CD in ('1') then rtgpass.LNH_CHRG_AMT else 0 end)
+                                        ,max(case when rtgpass.RTG_PASS_TYP_CD in ('3') then rtgpass.TOT_CHRG_AMT else 0 end))) 
+                          * max(case when rtgpass.RTG_PASS_TYP_CD in ('3') then rtgpass.FSC_AMT else 0 end)
+                      ),2) FSC_RETENTION
+	  from `PROJECT_NAME.FOLDER_NAME.RTG_RATING_PASS_TBL` rtgpass
+      join shpmt_min_max minmax on rtgpass.SHPMT_INSTC_ID between minmax.MIN_SHPMT_INSTC_ID and minmax.MAX_SHPMT_INSTC_ID
+      join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = rtgpass.SHPMT_INSTC_ID
+     where rtgpass.RTG_PASS_TYP_CD in ('1', '2', '3', '4', '5', '6', '9', 'A')
+  group by rtgpass.SHPMT_INSTC_ID
+),
+--  Shipment commodity information to determine FAK counts, average class, and rated as class at the shipment level
+shpmt_cmdy as (
+    with
+    --  Set the ranges for FAK jumps - rated to actual
+    --  Future addition
+    --  Shipment and Commodity detail
+    cmdy_detail as (
+        select 
+               cmdy.SHPMT_INSTC_ID,
+               cmdy.SEQUENCE_NUMBER as CMDY_SEQ,
+               cmdy.COMMODITY_WEIGHT as CMDY_WGT,
+               cmdy.VOLUME_CFT CMDY_VOL_CFT,
+               cmdy.COMMODITY_CLASS as CMDY_ACTL_CLASS,
+               max(cmdy.COMMODITY_WEIGHT) * cast(max(cmdy.COMMODITY_CLASS) as float64) as CMDY_ACTL_CLASS_WGT,
+               ifnull(cmdy.RTD_AS_CMDY_CLAS,cmdy.COMMODITY_CLASS) as CMDY_RTD_AS_CLASS,
+               max(cmdy.COMMODITY_WEIGHT) * max(case when cast(cmdy.RTD_AS_CMDY_CLAS as float64) > 0 then cast(cmdy.RTD_AS_CMDY_CLAS as float64) else cast(cmdy.COMMODITY_CLASS as float64) end) as CMDY_RTD_CLASS_WGT,
+               case when cmdy.COMMODITY_CLASS = ifnull(cmdy.RTD_AS_CMDY_CLAS,cmdy.COMMODITY_CLASS) then 'N' else 'Y' end IS_CMDY_FAK,
+               cmdy.PACKAGE_CODE,
+               cmdy.DESC_TXT,
+               cmdy.NMFC_ITEM_CODE
+          from `PROJECT_NAME.FOLDER_NAME.COMMODITY_TBL` cmdy
+          join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = cmdy.SHPMT_INSTC_ID
+         where cmdy.GBQ_PARTITION_PICKUP_DATE between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day)
+      group by 1, 2, 3, 4, 5, 7, 9, 10, 11, 12
+    )
+    -- Aggregate the commodities to the shipment level
+    select
+          cmdy.SHPMT_INSTC_ID,
+          count(cmdy.CMDY_SEQ)                                           as CMDY_NUM,
+          sum(case when cmdy.IS_CMDY_FAK in ('Y') then 1 else 0 end)     as CMDY_FAK_NUM,
+          case when max(cmdy.IS_CMDY_FAK) in ('Y') then 'Y' else 'N' end as IS_SHPMT_FAK,
+          sum(cmdy.CMDY_WGT)                                             as CMDY_WGT,
+          sum(cmdy.CMDY_ACTL_CLASS_WGT)                                  as CMDY_ACTL_CLASS_WGT,
+          sum(cmdy.CMDY_RTD_CLASS_WGT)                                   as CMDY_RTD_CLASS_WGT,
+          replace(replace(replace(format("%T", array_agg(cmdy.CMDY_ACTL_CLASS         ignore nulls order by cmdy.CMDY_SEQ)),'"',''),'[',''),']','') as FREIGHT_CLASS,
+          replace(replace(replace(format("%T", array_agg(cmdy.CMDY_RTD_AS_CLASS       ignore nulls order by cmdy.CMDY_SEQ)),'"',''),'[',''),']','') as RTD_AS_FREIGHT_CLASS,
+          replace(replace(replace(format("%T", array_agg(cast(cmdy.CMDY_WGT as int64) ignore nulls order by cmdy.CMDY_SEQ)),'"',''),'[',''),']','') as CMDY_WGT_BY_CLASS,
+          replace(replace(replace(format("%T", array_agg(cmdy.PACKAGE_CODE            ignore nulls order by cmdy.CMDY_SEQ)),'"',''),'[',''),']','') as PACKAGE,
+          replace(replace(replace(format("%T", array_agg(cmdy.DESC_TXT                ignore nulls order by cmdy.CMDY_SEQ)),'"',''),'[',''),']','') as PROD_DESC,
+          replace(replace(replace(format("%T", array_agg(cmdy.NMFC_ITEM_CODE          ignore nulls order by cmdy.CMDY_SEQ)),'"',''),'[',''),']','') as NMFC_ITEM_CODE
+     from cmdy_detail cmdy
+ group by 1
+),
+--  Shipment dimensions - maximum length, width, and height
+shpmt_dims as (
+    select 
+           dimshpmt.SHPMT_INSTC_ID,
+           case when max(dimshpmt.SHPMT_LEN_DIM) >= 96 then 'Y' else '' end IS_SHPMT_LONG,
+           max(dimshpmt.SHPMT_LEN_DIM) SHPMT_LEN_MAX,
+           max(dimshpmt.SHPMT_HGT_DIM) SHPMT_HGT_MAX,
+           max(dimshpmt.SHPMT_WDTH_DIM) SHPMT_WDTH_MAX
+      from `PROJECT_NAME.FOLDER_NAME.DIM_SHIPMENT_DIMENSION_HIST_TBL` dimshpmt
+      join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = dimshpmt.SHPMT_INSTC_ID
+     where date(dimshpmt.SHPMT_DIM_EFF_TMST)  <= current_date()
+       and date(dimshpmt.SHPMT_DIM_EXPR_TMST) >= current_date()
+  group by 1
+),
+--  Shipment Filed and Paid Claim
+shpmt_pd_claim as (
+    select  
+           claim.SHP_INST_ID                                                                         as SHPMT_INSTC_ID,
+           'Y'                                                                                       as IS_SHPMT_CLM,
+           count(distinct claim.CLM_ID)                                                              as TOT_CLM,
+           sum(claim.CLAIMED_AMT)                                                                    as CLM_AMT,
+           sum(case when ifnull(claim.ADJ_AMT, 0) = 0 then claim.CLAIMED_AMT else claim.ADJ_AMT end) as ADJ_CLM_AMT,
+           sum(claimcmdy.PCS_CNT)                                                                    as TOT_PCS_CLM,
+           sum(claimcmdy.CMDY_WGT)                                                                   as TOT_WEIGHT_CLM,
+           case when sum(claim.APRVD_AMT) > 0.0 then 'Y' else 'N' end                                as IS_SHPMT_PD_CLM,
+           sum((case when claim.APRVD_AMT > 0.0 then 1 else 0 end))                                  as PD_CLM_NUM,
+           sum(claim.APRVD_AMT)                                                                      as PD_CLM_AMT
+      from shpmt_to_use shpmt
+      join `PROJECT_NAME.FOLDER_NAME.CLM_CLAIM_RDS_TBL` claim on claim.SHP_INST_ID = shpmt.SHPMT_INSTC_ID
+      -- Join to claim commodity to get the counts, since there may be multiple commodities for a shipment. Aggregate to shipment level to join with CLM_CLAIM_RDS_TBL
+      join (    
+           select 
+                  CLM_ID,
+                  sum(PCS_CNT)  as PCS_CNT, 
+                  sum(CMDY_WGT) as CMDY_WGT 
+             from `PROJECT_NAME.FOLDER_NAME.CLM_COMMODITY_RDS_TBL`
+         group by 1
+            ) claimcmdy on claimcmdy.CLM_ID = claim.CLM_ID
+  group by 1
+    having PD_CLM_NUM > 0
+),
+-- Shipment Inspection and Reweigh Revenue
+shpmt_inspect_reweigh as (
+SELECT
+           shpmt.SHPMT_INSTC_ID,
+           -- Insection
+           max(case when corr.CORR_CATG_ID = 'Inspection' then 'Y' else 'N' end)                                                                  as IS_SHPMT_INSPECT,
+           sum(case when corr.CORR_CATG_ID = 'Inspection' then ifnull(corr.PST_TOT_USD_AMT,0) - ifnull(corr.PRE_TOT_USD_AMT,0) else 0 end)        as SHPMT_INSPECT_REV,
+           -- Rewiegh
+           max(case when corr.CORR_CATG_ID = 'Reweigh' then 'Y' else 'N' end)                                                                     as IS_SHPMT_REWEIGH,
+           sum(case when corr.CORR_CATG_ID = 'Reweigh' then ifnull(corr.PST_TOT_USD_AMT,0) - ifnull(corr.PRE_TOT_USD_AMT,0) else 0 end)           as SHPMT_REWEIGH_REV,
+           sum(case when corr.CORR_CATG_ID = 'Reweigh' then ifnull(corr.PST_TOT_ACTL_WGT_LBS,0) - ifnull(corr.PRE_TOT_ACTL_WGT_LBS,0) else 0 end) as SHPMT_REWEIGH_WGT,
+FROM shpmt_to_use shpmt
+JOIN `PROJECT_NAME.FOLDER_NAME.OMS_CORR_ORDR_HDR_RDS_TBL` corr on corr.SHPMT_INSTC_ID = shpmt.SHPMT_INSTC_ID
+--Data to be fetched from OMS_CORR_ORDR_HDR_RDS_TBL Table only from Aug-2016 till 11-Aug-2018
+WHERE  corr.PST_PKUP_DT >= date_sub(current_date(), interval 5 year) and corr.PST_PKUP_DT <= '2018-08-11'
+AND corr.CORR_CATG_ID in ('Reweigh','Inspection')
+GROUP BY 1
+UNION ALL 
+SELECT
+           shpmt.SHPMT_INSTC_ID,
+           -- Insection
+           max(case when cor.CATEGORY_DESC_TXT = 'Inspection' then 'Y' else 'N' end)                                                               as IS_SHPMT_INSPECT,
+           sum(case when cor.CATEGORY_DESC_TXT = 'Inspection' then ifnull(cor.SHPMT_CORR_AMT,0) - ifnull(cor.SHPMT_ORIGL_AMT,0) else 0 end)        as SHPMT_INSPECT_REV,
+           -- Rewiegh
+           max(case when cor.CATEGORY_DESC_TXT = 'Reweigh' then 'Y' else 'N' end)                                                                  as IS_SHPMT_REWEIGH,
+           sum(case when cor.CATEGORY_DESC_TXT = 'Reweigh' then ifnull(cor.SHPMT_CORR_AMT,0) - ifnull(cor.SHPMT_ORIGL_AMT,0) else 0 end)           as SHPMT_REWEIGH_REV,
+           sum(case when cor.CATEGORY_DESC_TXT = 'Reweigh' then ifnull(cor.SHPMT_CORR_WGT,0) - ifnull(cor.SHPMT_ORIGL_WGT,0) else 0 end)           as SHPMT_REWEIGH_WGT,
+FROM shpmt_to_use shpmt
+JOIN `PROJECT_NAME.FOLDER_NAME.COR_CORRECTION_REQUEST_TBL` cor on cor.SHPMT_INSTC_ID = shpmt.SHPMT_INSTC_ID
+--Data to be fetched from COR_CORRECTION_REQUEST_TBL Table 12-Aug-2018 onwards
+WHERE  date(cor.PKUP_DT ) >= date_sub(current_date(), interval 5 year) and cor.PKUP_DT >= '2018-08-12' 
+AND cor.CATEGORY_DESC_TXT in ('Reweigh','Inspection')
+GROUP BY 1
+),
+--  Book Close Dates
+shpmt_book_close_date as (
+    select 
+           YR_MO_NBR,
+           max(case when YR_MO_NBR = cast(concat(extract(year from current_date()), format_date("%m", current_date())) as int64) then current_date() else date(CLDR_DT) end) CLDR_DATE
+     from `PROJECT_NAME.FOLDER_NAME.CALENDAR_DAY_TBL`
+    where date(CLDR_DT) between date_sub(date_trunc(current_date(), year), interval 4 year) and date_sub(current_date(), interval 1 day)
+   group by YR_MO_NBR
+),
+--  Shipment book close amounts
+shpmt_book_close_as_was as (
+    select 
+           temp.SHPMT_INSTC_ID,
+           temp.TOTAL_CHARGE_AMOUNT,
+           temp.WEIGHT,
+           temp.SHPR_TO_CONS_MILE
+     from (
+        select 
+               shpmt_hist.SHIPMENT_INSTANCE_ID SHPMT_INSTC_ID,
+               shpmt_hist.EFF_TMST,
+               shpmt_hist.EXPR_TMST,
+               shpmt_hist.TOT_WGT WEIGHT,
+               shpmt_hist.SHPR_TO_CONS_MILE,
+               coalesce(shpmt_hist.TOT_CHRG_AMT, 0) TOTAL_CHARGE_AMOUNT,
+               row_number() over(partition by shpmt_hist.SHIPMENT_INSTANCE_ID order by shpmt_hist.EFF_TMST desc) ROW_NUM
+          from `PROJECT_NAME.FOLDER_NAME.SHIPMENT_HIST_TBL` shpmt_hist
+          join shpmt_min_max minmax on shpmt_hist.SHIPMENT_INSTANCE_ID between minmax.MIN_SHPMT_INSTC_ID and minmax.MAX_SHPMT_INSTC_ID
+          join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = shpmt_hist.SHIPMENT_INSTANCE_ID
+          join `PROJECT_NAME.FOLDER_NAME.CALENDAR_DAY_TBL` cldr on date(cldr.CLDR_DT) = shpmt_hist.PICKUP_DATE
+          join shpmt_book_close_date sbcd on sbcd.YR_MO_NBR = cldr.YR_MO_NBR
+         where date(shpmt_hist.EFF_TMST) <= sbcd.CLDR_DATE
+           and shpmt_hist.GBQ_PARTITION_PICKUP_DATE between date_sub(date_trunc(current_date(), year), interval 5 year) and date_sub(current_date(), interval 1 day) 
+     ) temp
+     where temp.ROW_NUM = 1
+),
+-- Accessorial book close amounts - fuel surcharge
+shpmt_book_close_accsrl_as_was as (
+    select 
+           temp.shpmt_instc_id,
+           temp.fsc_amt
+      from (
+         select 
+                shpmt.SHPMT_INSTC_ID,
+                accsrl_hist.EFF_TMST,
+                sum(accsrl_hist.CHRG_AMT) FSC_AMT,
+                row_number() over(partition by shpmt.shpmt_instc_id order by accsrl_hist.EFF_TMST desc) ROW_NUM
+           from  `PROJECT_NAME.FOLDER_NAME.SHPMT_ACCSRL_SVC_HIST_TBL` accsrl_hist
+           join shpmt_min_max minmax on accsrl_hist.SHIPMENT_INSTANCE_ID between minmax.MIN_SHPMT_INSTC_ID and minmax.MAX_SHPMT_INSTC_ID
+           join shpmt_to_use shpmt on shpmt.SHPMT_INSTC_ID = accsrl_hist.shipment_instance_id
+           join `PROJECT_NAME.FOLDER_NAME.CALENDAR_DAY_TBL` cldr on date(cldr.cldr_dt) = shpmt.PICKUP_DATE
+           join shpmt_book_close_date sbcd on sbcd.YR_MO_NBR = cldr.YR_MO_NBR
+          where accsrl_hist.ACCSRL_CD in ('FSC', 'TLF')
+            and sbcd.CLDR_DATE between date(accsrl_hist.EFF_TMST) and date(accsrl_hist.EXPR_TMST)
+          group by 1, 2
+      ) temp
+      where temp.row_num = 1
+),
+-- Primay Sales Employee - As-Is
+shpmt_empasgnmt_pacust_asis as (
+    select
+           pacust.PRCNG_AGRMT_INSTC_ID,
+           pacust.PA_CUST_NBR,
+           pacust.PA_CUST_SFX_NBR,
+           sls_cust_asis.CUSTOMER_NBR      as PRMY_CUST_NBR_ASIS,
+           sls_cust_asis.CUSTOMER_MAD_CODE as PRMY_CUST_MAD_CODE_ASIS,
+           sls_cust_asis.CUSTOMER_NAME1    as PRMY_CUST_NAME1_ASIS,
+           emp_asgmnt_asis.SLS_EMP_NBR     as PA_SLS_EMP_NBR_ASIS
+      -- Pricing Agreement Customer and Suffix
+--      from (select PRCNG_AGRMT_INSTC_ID, PA_CUST_NBR, PA_CUST_SFX_NBR from shpmt_pa_cust group by 1, 2, 3) pacust
+      from shpmt_pa_cust pacust
+      -- AS-IS Primary location for the pricing agreement
+ left join `PROJECT_NAME.FOLDER_NAME.ONECRM_SLS_PRMY_CUST_LOC_ASGMNT_TBL` prmy_loc_asis
+        on prmy_loc_asis.NEG_CUST_NBR = pacust.PA_CUST_NBR and prmy_loc_asis.CUST_AGRMT_SFX_NBR = pacust.PA_CUST_SFX_NBR  
+       and current_date() between date(prmy_loc_asis.PRMY_LOC_EFF_DT) and date(prmy_loc_asis.EXPR_DT)
+      -- AS-IS Primary customer info 
+ left join cust_location sls_cust_asis
+        on sls_cust_asis.CUSTOMER_NBR = prmy_loc_asis.PRMY_LOC_CUST_NBR
+      -- AS-IS Sales employee assigned to the location, he will be the owner of the pricing agreement tied to this location
+ left join `PROJECT_NAME.FOLDER_NAME.ONECRM_SLS_EMP_CUST_LOC_ASGMNT_TBL` emp_asgmnt_asis
+        on emp_asgmnt_asis.CUST_NBR = sls_cust_asis.CUSTOMER_NBR 
+       and current_date() between date(emp_asgmnt_asis.SLS_EMP_CUST_LOC_EFF_DT) and date(emp_asgmnt_asis.EXPR_DT)
+),
+-- Primay Sales Employee - As-Was
+shpmt_empasgnmt_pacust_aswas as (
+    select
+           pacust.PRCNG_AGRMT_INSTC_ID,
+           pacust.PA_CUST_NBR,
+           pacust.PA_CUST_SFX_NBR,
+           pacust.PICKUP_DATE,
+           sls_cust_aswas.CUSTOMER_NBR      as PRMY_CUST_NBR_ASWAS,
+           sls_cust_aswas.CUSTOMER_MAD_CODE as PRMY_CUST_MAD_CODE_ASWAS,
+           sls_cust_aswas.CUSTOMER_NAME1    as PRMY_CUST_NAME1_ASWAS,
+           emp_asgmnt_aswas.SLS_EMP_NBR     as PA_SLS_EMP_NBR_ASWAS,
+      -- Pricing Agreement Customer and Suffix
+--      from (select PRCNG_AGRMT_INSTC_ID, PA_CUST_NBR, PA_CUST_SFX_NBR, PICKUP_DATE from shpmt_pa_cust_div group by 1, 2, 3, 4) pacust
+      from (
+           select
+                  pacust.PRCNG_AGRMT_INSTC_ID,
+                  pacust.PA_CUST_NBR,
+                  pacust.PA_CUST_SFX_NBR,
+                  shpmt.PICKUP_DATE
+             from (select PRCNG_AGRMT_INSTC_ID, PICKUP_DATE from shpmt_to_use group by 1, 2) shpmt
+             join shpmt_pa_cust pacust on pacust.PRCNG_AGRMT_INSTC_ID = shpmt.PRCNG_AGRMT_INSTC_ID
+            group by 1, 2, 3, 4
+           ) pacust
+      -- AS-WAS Primary location for the pricing agreement
+ left join `PROJECT_NAME.FOLDER_NAME.ONECRM_SLS_PRMY_CUST_LOC_ASGMNT_TBL` prmy_loc_aswas
+        on prmy_loc_aswas.NEG_CUST_NBR = pacust.PA_CUST_NBR
+       and prmy_loc_aswas.CUST_AGRMT_SFX_NBR = pacust.PA_CUST_SFX_NBR 
+       and pacust.PICKUP_DATE between date(prmy_loc_aswas.PRMY_LOC_EFF_DT) and date(prmy_loc_aswas.EXPR_DT)
+      -- AS-WAS Primary customer info 
+ left join cust_location sls_cust_aswas
+        on sls_cust_aswas.CUSTOMER_NBR = prmy_loc_aswas.PRMY_LOC_CUST_NBR
+      -- AS-WAS Sales employee assigned to the location, he will be the owner of the pricing agreement tied to this location
+ left join `PROJECT_NAME.FOLDER_NAME.ONECRM_SLS_EMP_CUST_LOC_ASGMNT_TBL` emp_asgmnt_aswas
+        on emp_asgmnt_aswas.CUST_NBR = sls_cust_aswas.CUSTOMER_NBR
+       and pacust.PICKUP_DATE between date(emp_asgmnt_aswas.SLS_EMP_CUST_LOC_EFF_DT) and date(emp_asgmnt_aswas.EXPR_DT)
+),
+-- Primay Sales Employee - As-Was NEW 6/10/2021
+shpmt_cust_zip_pkupdt as (
+    select
+           CUSTOMER_ID,
+           CUSTOMER_ZIP,
+           PICKUP_DATE,
+      from (
+           -- Shipper
+           select
+                  cust.CUSTOMER_ID,
+                  cust.CUSTOMER_ZIP,
+                  shpmt.PICKUP_DATE,
+             from shpmt_cust_info cust
+             join (select SHIPPER_ID, PICKUP_DATE from shpmt_to_use group by 1, 2) shpmt on shpmt.SHIPPER_ID = cust.CUSTOMER_ID
+
+        union all
+
+           -- Consignee
+           select
+                  cust.CUSTOMER_ID,
+                  cust.CUSTOMER_ZIP,
+                  shpmt.PICKUP_DATE,
+             from shpmt_cust_info cust
+             join (select CONSIGNEE_ID, PICKUP_DATE from shpmt_to_use group by 1, 2) shpmt on shpmt.CONSIGNEE_ID = cust.CUSTOMER_ID
+           )
+  group by 1,2,3
+),
+shpmt_empasgnmt_pstl_cd_aswas as (
+    select
+           cust.CUSTOMER_ID,
+           cust.CUSTOMER_ZIP,
+           cust.PICKUP_DATE,
+           sls_pstl_asgmnt_aswas.SLS_EMP_NBR     as SLS_EMP_NBR_ASWAS,
+--           sls_pstl_asgmnt_aswas_new.SLS_EMP_NBR as SLS_EMP_NBR_ASWAS_NEW,
+      from shpmt_cust_zip_pkupdt cust
+ left join `PROJECT_NAME.FOLDER_NAME.ONECRM_SLS_EMP_PSTL_CD_ASGMNT_TBL` sls_pstl_asgmnt_aswas on sls_pstl_asgmnt_aswas.PSTL_CD = cust.CUSTOMER_ZIP
+       and cust.PICKUP_DATE between date(sls_pstl_asgmnt_aswas.SLS_EMP_PSTL_CD_EFF_DT) and date(sls_pstl_asgmnt_aswas.EXPR_DT)
+       and date(sls_pstl_asgmnt_aswas.EXPR_DT) >= date_sub(date_trunc(current_date(), year), interval 5 year)
+ --left join `PROJECT_NAME.DERIVED_LAYER_NAME.PC_SLS_EMP_PSTL_CD_ASGMNT_TBL` sls_pstl_asgmnt_aswas_new on sls_pstl_asgmnt_aswas_new.PSTL_CD = cust.CUSTOMER_ZIP
+--       and cust.PICKUP_DATE between date(sls_pstl_asgmnt_aswas_new.SLS_EMP_PSTL_CD_EFF_DT) and date(sls_pstl_asgmnt_aswas_new.EXPR_DT)
+--       and date(sls_pstl_asgmnt_aswas_new.EXPR_DT) >= date_sub(date_trunc(current_date(), year), interval 5 year)
+),
+--  Fields required for Back Office reports
+shpmt_bko_fields as (		
+    select
+           shpmt.SHPMT_INSTC_ID,			
+           shm.ARCHIVE_IND,
+           shm.DLVR_SIG_NM_TXT,
+           shm.DLVR_SIG_TMST,
+           shm.LST_MVMT_TMST,
+           shm.MVMT_STAT_CD LST_MVMT_STAT_CD,
+           case
+           	    when MVMT_STAT_CD = '1' then 'On Dock'
+           	    when MVMT_STAT_CD = '2' then 'On Trailer'
+           	    when MVMT_STAT_CD = '3' then 'Out for Delivery'
+           	    when MVMT_STAT_CD = '4' then 'Interim Delivery'
+           	    when MVMT_STAT_CD = '5' then 'Final Delivered'
+           	    when MVMT_STAT_CD = '6' then 'Not Applicable'
+           	    when MVMT_STAT_CD = '7' then 'Cancelled'
+           	    else NULL
+            end LST_MVMT_STAT_DESC,
+           max(bol.NBR_TXT) as BOL_NBR,
+           max(po.NBR_TXT)  as PO_NBR,
+           max(srn.NBR_TXT) as SRN_TXT
+      from shpmt_to_use shpmt
+      join `PROJECT_NAME.FOLDER_NAME.SHM_SHIPMENT_RDS_TBL` shm on shpmt.SHPMT_INSTC_ID = shm.SHP_INST_ID			
+ left join `PROJECT_NAME.FOLDER_NAME.SHM_SR_NBR_RDS_TBL`   bol on shpmt.SHPMT_INSTC_ID = bol.SHP_INST_ID and bol.SEQ_NBR = 1	and trim(bol.TYP_CD) in ('SN#')    
+ left join `PROJECT_NAME.FOLDER_NAME.SHM_SR_NBR_RDS_TBL`    po on shpmt.SHPMT_INSTC_ID = po.SHP_INST_ID  and  po.SEQ_NBR = 1	and trim(po.TYP_CD)  in ('PO#','PO')
+ left join `PROJECT_NAME.FOLDER_NAME.SHM_SR_NBR_RDS_TBL`   srn on shpmt.SHPMT_INSTC_ID = srn.SHP_INST_ID and srn.SEQ_NBR = 1 and trim(srn.TYP_CD) not in ('PO#','PO', 'SN#')
+     where shm.GBQ_PARTITION_PKUP_DT >= date_sub(date_trunc(current_date(), year), interval 5 year) or shm.GBQ_PARTITION_PKUP_DT is null
+  group by 1, 2, 3, 4, 5, 6, 7
+),
+-- Shipment delivery exception indicators: 1. 'Damaged but accepted', 'Refused Damaged'  2. 'All Short', 'Partial Short'  3. 'Over but accepted', 'Overage'
+shpmt_dlvrd_excp as (
+	select 
+			   excp.SHPMT_INSTC_ID, 
+         max(case when excp.phys_excp_typ in ('Damaged but accepted', 'Refused Damaged') then 'Y' else '' end) as IS_DMGD_SHPMT,
+         max(case when excp.phys_excp_typ in ('All Short', 'Partial Short')              then 'Y' else '' end) as IS_SHORT_SHPMT,
+         max(case when excp.phys_excp_typ in ('Over but accepted', 'Overage')            then 'Y' else '' end) as IS_OVER_SHPMT
+		from shpmt_to_use shpmt
+		join `PROJECT_NAME.FOLDER_NAME.DELIVERY_EXCEPTION_TBL` excp on shpmt.SHPMT_INSTC_ID = excp.SHPMT_INSTC_ID
+   where excp.phys_excp_typ in ('Damaged but accepted', 'Refused Damaged', 'All Short', 'Partial Short', 'Over but accepted', 'Overage')
+     and date(excp.EVNT_DTTM_PDX) >= date_sub(date_trunc(current_date(), year), interval 5 year)
+ group by 1
+),
+
+-------ADDED SOME CHANGES
+shpmt_non_phys_excp as (
+     select 
+           distinct shpmt.SHPMT_INSTC_ID, 
+           string_agg(NON_PHYS_EXCP_TYP, ', ') as NON_PHYSICAL_EXCP
+        from shpmt_to_use shpmt
+        join `PROJECT_NAME.FOLDER_NAME.DELIVERY_EXCEPTION_TBL` non_phys_excp on shpmt.SHPMT_INSTC_ID = non_phys_excp.SHPMT_INSTC_ID
+   where 
+      non_phys_excp.NON_PHYS_EXCP_TYP in ('Attempt', 'Refused', 'Undeliverable', 'Exception with Note', 'Returned', 'Refused on Paper')
+      and
+     date(non_phys_excp.EVNT_DTTM_PDX) >= date_sub(date_trunc(current_date(), year), interval 5 year)
+     group by 1
+),
+-- Shipment Exempt Reason
+shpmt_exempt_reason as (
+	select 
+		  distinct shpmt.SHPMT_INSTC_ID, 
+		  exempt.EXEMPT_REASON_DESCRIPTION
+	  from shpmt_to_use shpmt
+	  join `PROJECT_NAME.FOLDER_NAME.EXEMPT_REASON_CODE_TBL` exempt on exempt.EXEMPT_REASON_ID = shpmt.EXEMPT_REASON_ID
+),
+-- Lane Balance (As-Is and As-Was)
+lane_balance as (
+   select
+          ORIGIN      as ORIGIN_SIC_TERM_CODE,
+          DESTINATION as DESTINATION_SIC_TERM_CODE,
+          CAST( CONCAT( datayear, '-' , datamonth, '-' , 01) AS DATE) LANE_BALANCE_DATE,
+          BALANCE_AVG,
+          dense_rank () over (partition by concat(origin,destination) order by (cast(datayear as int64)*100+cast(datamonth as int64)) desc) as LANE_RANK,
+     from `PROJECT_NAME.FOLDER_NAME.OR_LANE_BALANCE_RDS_TBL`
+),
+lane_balance_as_was as (
+      select 
+             curr.ORIGIN_SIC_TERM_CODE,
+             curr.DESTINATION_SIC_TERM_CODE,
+             curr.LANE_BALANCE_DATE    as LANE_BALANCE_START_DATE,
+              (CASE WHEN prev.lane_balance_date is null THEN current_date ELSE DATE_ADD(prev.lane_balance_date, INTERVAL -1 DAY) END) LANE_BALANCE_END_DATE,
+             curr.LANE_RANK,
+             curr.BALANCE_AVG
+        from lane_balance curr
+   left join lane_balance prev on curr.ORIGIN_SIC_TERM_CODE = prev.ORIGIN_SIC_TERM_CODE and curr.DESTINATION_SIC_TERM_CODE = prev.DESTINATION_SIC_TERM_CODE and prev.LANE_RANK = curr.LANE_RANK - 1
+),
+-- Dynamic Pricing AMC Indicator
+dynamic_shipment AS (
+    select
+           LTL_SHIPMENT_INST_ID,
+           PRICE_RULE_HEADER_ID,
+           AMC_IND AS DYN_PRC_AMC_IND,
+           dense_rank() over (partition by LTL_SHIPMENT_INST_ID  order by LST_UPDT_TMST desc) as DP_RANK,
+      from `PROJECT_NAME.FOLDER_NAME.DYN_DYNAMIC_SHIPMENT_RDS_TBL`
+     where LTL_REDUCTION_ACC_CD = 'XSS'
+       and LTL_PRO_NBR_TXT > ' '
+  group by 1,2,3,LST_UPDT_TMST
+),
+-- Cartage Shipments
+cartage_shpmt as (
+     select
+            mvmt.SHPMT_INSTC_ID,
+            mvmt.EVNT_SIC_CD,
+       from `PROJECT_NAME.FOLDER_NAME.SHM_EVENT_TYPE_TBL` type
+       join `PROJECT_NAME.FOLDER_NAME.SHM_MVMT_EVENT_TBL` mvmt on type.EVNT_TYP = mvmt.EVNT_TYP and type.EVNT_TYP = 'CG'
+      where mvmt.GBQ_PARTITION_EVNT_DATE_PDX between date_sub(date_trunc(current_date(), year), interval 5 year) and Current_Date()
+   group by 1,2
+),
+cartage_od_sic as (
+     select
+            crtg.SHPMT_INSTC_ID,
+            max(case when shpmt.ORIGIN_SIC_CODE      = crtg.EVNT_SIC_CD then 'Y' else 'N' end) as IS_SHPMT_CARTAGE_ORIG,
+            max(case when shpmt.DESTINATION_SIC_CODE = crtg.EVNT_SIC_CD then 'Y' else 'N' end) as IS_SHPMT_CARTAGE_DEST,
+       from cartage_shpmt crtg
+       join shpmt_to_use shpmt on crtg.SHPMT_INSTC_ID = shpmt.SHPMT_INSTC_ID
+   group by 1
+),
+dr_bol_imaged as (
+     select  
+            shp.SHP_INST_ID,
+	    max(case when event_log.TYP_CD = 'F' and  SUB_TYP_CD = 'BL' then 'Y' else 'N' end) as IS_BOL_IMAGED,
+	    max(case when event_log.TYP_CD = 'F' and  SUB_TYP_CD = 'DR' then 'Y' else 'N' end) as IS_DR_IMAGED
+       from `PROJECT_NAME.FOLDER_NAME.SHM_SHIPMENT_RDS_TBL`  shp
+       join `PROJECT_NAME.FOLDER_NAME.SHM_EVENT_LOG_RDS_TBL`  event_log on  shp.SHP_INST_ID  =  event_log.SHP_INST_ID
+      where shp.GBQ_PARTITION_PKUP_DT  between date_sub(date_trunc(current_date(), year), interval 5 year) and Current_Date()
+   group by 1
+),
+base_shpmt as (
+    select
+           shpmt.SHPMT_INSTC_ID,
+           shpmt.PRO_NUMBER,
+           shpmt.PICKUP_DATE,
+           shpmt.DELIVERY_DATE,
+           shpmt.EST_DLVRY_DATE,
+           shpmt.REQUIRED_DLVRY_DT,
+           shpmt.OPERATION_BILL_DATE,
+           shpmt.ORIGIN_SIC_CODE,
+           shpmt.DESTINATION_SIC_CODE,
+           shpmt.DELIVERY_QUALIFIER,
+           shpmt.IS_SHPMT_HSS,
+           shpmt.SHP_SVC_STAT_ADJ,
+           shpmt.SHP_SVC_STAT_OVRD,
+	   shpmt.SHP_SVC_OVRD_STAT_RSN_CD,
+	   shpmt.SHP_SVC_OVRD_SIC_CD,
+           shpmt.BILL2_REL_CODE,
+           shpmt.BILL_CLASS_CD,
+           shpmt.IS_REV_SHPMT,
+           shpmt.CHARGE_TO_CD,
+           shpmt.IS_SHPMT_DLVRD,
+           shpmt.IS_SHPMT_SVC_FAILED,
+           shpmt.PICKUP_REQUEST_SOURCE_CD,
+           shpmt.IS_GUARANTEED,
+           shpmt.IS_HAZMAT,
+           shpmt.IS_COLLECT,
+           shpmt.IS_WARRANTY,
+           shpmt.WARRANTY_FLAG,
+           shpmt.STANDARD_TRANSIT_DAYS,
+           shpmt.ACTUAL_TRANSIT_DAYS,
+           shpmt.CALC_SERVICE_TIMESTAMP,
+           shpmt.CALC_SERVICE_DAYS,
+           shpmt.IS_LATE_TENDER,
+           shpmt.SERVICE_CALC_STATUS_CD,
+           shpmt.BILL_DTTMSS,
+           shpmt.SHPR_TO_CONS_MILE,
+           shpmt.PRCNG_AGRMT_INSTC_ID,
+           shpmt.PRCNG_AGRMT_RULESET_NBR,
+           shpmt.RTAR,
+           shpmt.RTAR_DESC,
+           shpmt.PPD_COLL_TYP,
+           shpmt.PREPAID_FLAG,
+           shpmt.COLLECT_FLAG,
+           shpmt.SHIPPER_DEBTOR_FLAG,
+           shpmt.CONSIGNEE_DEBTOR_FLAG,
+           shpmt.BILL2_DEBTOR_FLAG,
+           shpmt.DIV_CUST_TYPE,
+           shpmt.LT_TNDR_SHPMT_PKUP_DT_TM_LCL,
+           shpmt.AFTR_HR_SHPMT_PKUP_DTTMSS_LCL,
+           shpmt.SVC_STRT_DATE,
+           shpmt.PRO_DTL_URL_TXT,
+           shpmt.DMGD_PRO_IMG,
+           shpmt.IS_SHPMT_CST,
+           shpmt.NET_REVENUE,
+           shpmt.DISCOUNT_AMOUNT,
+           shpmt.TOTAL_CHARGE_AMOUNT,
+           shpmt.NON_REVENUE,
+           shpmt.EXCH_AMT,
+           shpmt.INTRA_CNDN_AMT,
+           shpmt.COD_AMT,
+           shpmt.TOT_MX_NON_REV_AMT,
+           shpmt.WEIGHT,
+           shpmt.TOTAL_USD_AMOUNT,
+           shpmt.SIC_MILES,
+           shpmt.TOTAL_VOLUME_CUBIC_FOOT,
+           shpmt.MOTORIZED_PIECES_COUNT,
+           shpmt.TOTAL_PIECES_COUNT,
+           shpmt.TOTAL_PALLETS_COUNT,
+           shpmt.LOOSE_PCE_CNT,
+           shpmt.PUP_VOL_PCT,
+           shpmt.MOTOR_MOVES,
+           --  Shipper
+           shpr.CUSTOMER_ID       as SHPR_ID,
+           shpr.CUSTOMER_NBR      as SHPR_NBR,
+           shpr.CUSTOMER_MAD_CODE as SHPR_MAD_CODE,
+           shpr.CUSTOMER_NAME1    as SHPR_NAME1,
+           shpr.CUSTOMER_ADDRESS  as SHPR_ADDRESS,
+           shpr.CUSTOMER_CITY     as SHPR_CITY,
+           shpr.CUSTOMER_STATE    as SHPR_STATE,
+           shpr.CUSTOMER_ZIP      as SHPR_ZIP,
+           shpr.CUSTOMER_ZIP3     as SHPR_ZIP3,
+           shpr.CUSTOMER_LNGT_NBR as SHPR_LNGT_NBR,
+           shpr.CUSTOMER_LATD_NBR as SHPR_LATD_NBR,
+           shpr.CUSTOMER_CNTRY    as SHPR_CNTRY,
+           shpr.CUSTOMER_LVL      as SHPR_LVL,
+           shpr.MAD_CODE_LVL2     as SHPR_MAD_CODE_LVL2,
+           shpr.MAD_CODE_LVL3     as SHPR_MAD_CODE_LVL3,
+
+           -- Consignee
+           cons.CUSTOMER_ID       as CONS_ID,
+           cons.CUSTOMER_NBR      as CONS_NBR,
+           cons.CUSTOMER_MAD_CODE as CONS_MAD_CODE,
+           cons.CUSTOMER_NAME1    as CONS_NAME1,
+           cons.CUSTOMER_ADDRESS  as CONS_ADDRESS,
+           cons.CUSTOMER_CITY     as CONS_CITY,
+           cons.CUSTOMER_STATE    as CONS_STATE,
+           cons.CUSTOMER_ZIP      as CONS_ZIP,
+           cons.CUSTOMER_ZIP3     as CONS_ZIP3,
+           cons.CUSTOMER_LNGT_NBR as CONS_LNGT_NBR,
+           cons.CUSTOMER_LATD_NBR as CONS_LATD_NBR,
+           cons.CUSTOMER_CNTRY    as CONS_CNTRY,
+           cons.CUSTOMER_LVL      as CONS_LVL,
+           cons.MAD_CODE_LVL2     as CONS_MAD_CODE_LVL2,
+           cons.MAD_CODE_LVL3     as CONS_MAD_CODE_LVL3,
+           
+           
+           -- Bill-To
+           bill2.CUSTOMER_ID       as BILL2_ID,
+           bill2.CUSTOMER_NBR      as BILL2_NBR,
+           bill2.CUSTOMER_MAD_CODE as BILL2_MAD_CODE,
+           bill2.CUSTOMER_NAME1    as BILL2_NAME1,
+           bill2.CUSTOMER_ADDRESS  as BILL2_ADDRESS,
+           bill2.CUSTOMER_CITY     as BILL2_CITY,
+           bill2.CUSTOMER_STATE    as BILL2_STATE,
+           bill2.CUSTOMER_ZIP      as BILL2_ZIP,
+           bill2.CUSTOMER_ZIP3     as BILL2_ZIP3,
+           bill2.CUSTOMER_LNGT_NBR as BILL2_LNGT_NBR,
+           bill2.CUSTOMER_LATD_NBR as BILL2_LATD_NBR,
+           bill2.CUSTOMER_CNTRY    as BILL2_CNTRY,
+           bill2.CUSTOMER_LVL      as BILL2_LVL,
+           bill2.MAD_CODE_LVL2     as BILL2_MAD_CODE_LVL2,
+           bill2.MAD_CODE_LVL3     as BILL2_MAD_CODE_LVL3,
+
+           -- As Entered Shipper and Consignee
+           asentrd.AS_ENTRD_SHPR_MAD_CODE,
+           asentrd.AS_ENTRD_SHPR_NAME,
+           asentrd.AS_ENTRD_SHPR_CITY,
+           asentrd.AS_ENTRD_SHPR_ST,
+           asentrd.AS_ENTRD_SHPR_CTRY,
+           asentrd.AS_ENTRD_SHPR_ZIP6,
+           asentrd.AS_ENTRD_CONS_MAD_CODE,
+           asentrd.AS_ENTRD_CONS_NAME,
+           asentrd.AS_ENTRD_CONS_CITY,
+           asentrd.AS_ENTRD_CONS_ST,
+           asentrd.AS_ENTRD_CONS_CTRY,
+           asentrd.AS_ENTRD_CONS_ZIP6,
+           asentrd.AS_ENTRD_BILL2_MAD_CODE,
+           asentrd.AS_ENTRD_BILL2_NAME,
+           asentrd.AS_ENTRD_BILL2_CITY,
+           asentrd.AS_ENTRD_BILL2_ST,
+           asentrd.AS_ENTRD_BILL2_CTRY,
+           asentrd.AS_ENTRD_BILL2_ZIP6,
+           -- Pricing Agreement
+           pra.PA_CUST_NAT_ACCT_IND,
+           pra.PA_PRNT_CUST_MAD_CODE,
+           pra.PA_PRNT_CUST_NAME1,
+           pra.PA_CUST_MAD_CODE,
+           pra.PA_CUST_NAME1,
+           pra.PA_CUST_CITY,
+           pra.PA_CUST_STATE,
+           pra.PA_CUST_ZIP,
+           pra.PA_CUST_CNTRY,
+           pra.PA_CUST_LVL,
+           pra.PA_CUST_NBR,
+           pra.PA_CUST_SFX_NBR,
+           pra.PA_CUST_VERS_NBR,
+           pra.PA_CUST_3PL_VERS_IND,
+           pradiv.PA_CUST_DIV_MAD_CODE,
+           pradiv.PA_CUST_DIV_NAME1,
+           pradiv.PA_CUST_DIV_LVL,
+           case when pra.PA_CUST_VERS_RENEG_DT < shpmt.PICKUP_DATE then 'Y' else 'N' end as IS_SHPMT_IN_EXTN,
+           -- Origin and Destination SIC_TERM, District and Regions with names, city, and state for SIC and SIC_TERM
+           origsic.SIC_NAME            as ORIGIN_SIC_NAME,
+           origsic.SIC_CLASS_SIZE      as ORIGIN_SIC_CLASS_SIZE,
+           origsic.SIC_CITY            as ORIGIN_SIC_CITY,
+           origsic.SIC_STATE           as ORIGIN_SIC_STATE,
+           origsic.SIC_TERM_CODE       as ORIGIN_SIC_TERM_CODE,
+           origsic.SIC_TERM_NAME       as ORIGIN_SIC_TERM_NAME,
+           origsic.SIC_TERM_CITY       as ORIGIN_SIC_TERM_CITY,
+           origsic.SIC_TERM_STATE      as ORIGIN_SIC_TERM_STATE, 
+           origsic.SIC_TERM_CLASS_SIZE as ORIGIN_SIC_TERM_CLASS_SIZE,
+           origsic.LVL2_NM             as ORIGIN_OPS_DISTRICT,
+           origsic.LVL1_NM             as ORIGIN_OPS_REGION,
+           origsic.LVL2_NM             as ORIGIN_OPS_LVL2_NM,
+           origsic.LVL1_NM             as ORIGIN_OPS_LVL1_NM,
+           destsic.SIC_NAME            as DESTINATION_SIC_NAME,
+           destsic.SIC_CLASS_SIZE      as DESTINATION_SIC_CLASS_SIZE,
+           destsic.SIC_CITY            as DESTINATION_SIC_CITY,
+           destsic.SIC_STATE           as DESTINATION_SIC_STATE,
+           destsic.SIC_TERM_CODE       as DESTINATION_SIC_TERM_CODE,
+           destsic.SIC_TERM_NAME       as DESTINATION_SIC_TERM_NAME,
+           destsic.SIC_TERM_CITY       as DESTINATION_SIC_TERM_CITY,
+           destsic.SIC_TERM_STATE      as DESTINATION_SIC_TERM_STATE, 
+           destsic.SIC_TERM_CLASS_SIZE as DESTINATION_SIC_TERM_CLASS_SIZE,
+           destsic.LVL2_NM             as DESTINATION_OPS_DISTRICT,
+           destsic.LVL1_NM             as DESTINATION_OPS_REGION,
+           destsic.LVL2_NM             as DESTINATION_OPS_LVL2_NM,
+           destsic.LVL1_NM             as DESTINATION_OPS_LVL1_NM,
+           -- Cartage
+           case when crtg.IS_SHPMT_CARTAGE_ORIG = 'Y' then 'Y' else 'N' end IS_SHPMT_CARTAGE_ORIG,
+           case when crtg.IS_SHPMT_CARTAGE_DEST = 'Y' then 'Y' else 'N' end IS_SHPMT_CARTAGE_DEST,
+	   --Delivery Receipt and Bill of Lading
+	   case when dr_bol.IS_BOL_IMAGED = 'Y' then 'Y' else 'N' end IS_BOL_IMAGED,
+           case when dr_bol.IS_DR_IMAGED = 'Y' then 'Y' else 'N' end IS_DR_IMAGED,
+      	   -- Lane Balance
+      	   lb.BALANCE_AVG,
+           lb_aw.BALANCE_AVG           as BALANCE_AVG_AS_WAS,
+      	   -- Dynamic Pricing 
+      	   ds.PRICE_RULE_HEADER_ID,
+           ds.DYN_PRC_AMC_IND,
+           -- Rating Indicators
+           rtg.IS_SHPMT_AMC,
+           case when rtg.IS_SHPMT_MANL_RATED = 'Y' then 'Y' else 'N' end as IS_SHPMT_MANL_RATED,
+           rtg.DSCNT_APLCBL_PCT,
+           rtg.DSCNT_ACTL_PCT,
+           rtg.LNHL_CHG_AMT,
+           rtg.DSCNT_AMT,
+           rtg.SHPR_AGRMT_ID,
+           rtg.SHPR_RULESET_NBR,
+           rtg.CONS_AGRMT_ID,
+           rtg.CONS_RULESET_NBR,
+           rtg.BILTO_AGRMT_ID,
+           rtg.BILTO_RULESET_NBR,
+           -- OBI info
+           ifnull(shpmt.NET_REVENUE,0) - ifnull(obi.OBI_AMT,0) NET_REVENUE_LESS_OBI,
+           case when obi.IS_OBI_SHPMT = 'Y' then obi.IS_OBI_SHPMT else 'N' end IS_OBI_SHPMT,
+           ifnull(obi.OBI_AMT,0) OBI_AMT,
+           -- Accessorial Info
+           accsrl.ACCSRL_NUM,
+           accsrl.ACCSRL_REV,
+	       accsrl.IS_SHPMT_VSP,
+           accsrl.IS_MEX_SHP,
+           -- Accessorial Info Fuel Surcharge - FSC, TLF
+           accsrl.ACCSRL_FSC_NUM,
+           accsrl.ACCSRL_FSC_REV,
+           case when accsrl.IS_ACCSRL_VSP = 'Y' then 'Y' else 'N' end IS_ACCSRL_VSP,
+           --  Net Revenue Less FSC and Net Revenue Less OBI & FSC
+           ifnull(shpmt.NET_REVENUE,0) - ifnull(accsrl.ACCSRL_FSC_REV,0) NET_REVENUE_LESS_FSC,
+           ifnull(shpmt.NET_REVENUE,0) - ifnull(obi.OBI_AMT,0) - ifnull(accsrl.ACCSRL_FSC_REV ,0) NET_REVENUE_LESS_OBI_FSC,
+           -- Accessorial Info Non Fuel Surcharge - not in FSC, TLF
+           accsrl.ACCSRL_NONFSC_REV,
+           accsrl.ACCSRL_NONFSC_NUM,
+           accsrl.ACCSRL_NONFSC_NUM_WVD,
+           -- Accessorial Info Extra Long Shipment - ELS
+           accsrl.ACCSRL_ELS_REV,
+           accsrl.ACCSRL_ELS_NUM_WVD,
+           case when accsrl.IS_ACCSRL_ELS = 'Y' then 'Y' else 'N' end IS_ACCSRL_ELS,
+           -- Accessorial Info High Cost Delivery - HCD
+           accsrl.ACCSRL_HCD_REV,
+           case when accsrl.IS_ACCSRL_HCD = 'Y' then 'Y' else 'N' end IS_ACCSRL_HCD,
+           -- Accessorial Info Dynamic Pricing - XSS
+           accsrl.ACCSRL_XSS_REV,
+           case when accsrl.IS_ACCSRL_XSS = 'Y' then 'Y' else 'N' end IS_ACCSRL_XSS,
+           -- Accessorial Info Lineal Foot - XLF
+           case when accsrl.IS_ACCSRL_XLF = 'Y' then 'Y' else 'N' end IS_ACCSRL_XLF,
+           -- Accessorial Info Banyan - LSS
+           case when accsrl.IS_ACCSRL_LLS = 'Y' then 'Y' else 'N' end IS_ACCSRL_LLS,
+           -- Costing
+--           case when shpmt.PICKUP_DATE <= lstcst.LST_COST_DATE then 'Y' else 'N' end IS_SHPMT_CST,
+           ifnull(cst.TOT_COST,0) TOT_COST,
+           ifnull(cst.TOT_DIR_CST,0) TOT_DIR_CST,
+           ifnull(cst.TOT_OVHD_CST,0) TOT_OVHD_CST,
+           cst.DNSTY_SRC_CD,
+           cst.DNSTY_SRC_DESC,
+           ifnull(cst.DNSTY_QTY,0) DNSTY_QTY,
+           -- Profit
+           case when shpmt.IS_SHPMT_CST = 'Y' then ifnull(shpmt.NET_REVENUE,0) - ifnull(obi.OBI_AMT,0) - ifnull(cst.TOT_COST,0) else 0 end PROFIT,
+           case
+                when shpmt.IS_SHPMT_CST = 'Y' and (ifnull(shpmt.NET_REVENUE,0) - ifnull(obi.OBI_AMT,0) - ifnull(cst.TOT_COST,0)) <= 0 then 'N'
+                when shpmt.IS_SHPMT_CST = 'Y' and (ifnull(shpmt.NET_REVENUE,0) - ifnull(obi.OBI_AMT,0) - ifnull(cst.TOT_COST,0))  > 0 then 'Y'
+                else NULL
+            end IS_SHPMT_PROFITABLE, 
+           -- Rating Pass
+           rtgpass.RP_INV_TOT_CHRG_AMT,
+           rtgpass.RP_INV_LNH_CHRG_AMT,
+           rtgpass.RP_INV_DSCNT_AMT,
+           rtgpass.RP_INV_FSC_AMT,
+           rtgpass.RP_INV_TOT_ACCSRL_AMT,
+           rtgpass.RP_INV_RTG_TRF_NM,
+           rtgpass.RP_INV_FSC_TRF_NM,
+           rtgpass.RP_CORP_AS_WAS_TOT_CHRG_AMT,
+           rtgpass.RP_CORP_AS_WAS_LNH_CHRG_AMT,
+           rtgpass.RP_CORP_AS_WAS_FSC_AMT,
+           rtgpass.RP_CORP_AS_WAS_TOT_ACCSRL_AMT,
+           rtgpass.RP_CORP_TOT_CHRG_AMT,
+           rtgpass.RP_CORP_LNH_CHRG_AMT,
+           rtgpass.RP_CORP_FSC_AMT,
+           rtgpass.RP_CORP_TOT_ACCSRL_AMT,
+           rtgpass.RP_RENO_IMPCT_TOT_CHRG_AMT,
+           rtgpass.RP_RENO_IMPCT_LNH_CHRG_AMT,
+           rtgpass.RP_RENO_IMPCT_DSCNT_AMT,
+           rtgpass.RP_RENO_IMPCT_FSC_AMT,
+           rtgpass.RP_RENO_IMPCT_TOT_ACCSRL_AMT,
+           rtgpass.RP_RENO_IMPCT_RTG_TRF_NM,
+           rtgpass.RP_RENO_IMPCT_FSC_TRF_NM,
+           rtgpass.RP_NO_FAK_OVRD_TOT_CHRG_AMT,
+           rtgpass.RP_NO_FAK_OVRD_LNH_CHRG_AMT,
+           rtgpass.RP_NO_FAK_OVRD_DSCNT_AMT,
+           rtgpass.RP_NO_FAK_OVRD_FSC_AMT,
+           rtgpass.RP_FAK_OVRD_TOT_CHRG_AMT,
+           rtgpass.RP_FAK_OVRD_LNH_CHRG_AMT,
+           rtgpass.RP_FAK_OVRD_DSCNT_AMT,
+           rtgpass.RP_FAK_OVRD_FSC_AMT,
+           case when rtgpass.FSC_RETENTION = 1 then 'Y' else 'N' end IS_SHPMT_FSC_RETENTION,
+           -- Rating Pass for GRI (RTAR = 'CTS599' - requires knowledge of the GRI Effective Date and Pricing Agreement Effective Date (an PICKUP_DATE but this is at the shipment level)
+           case 
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE <  shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_9_TOT_CHRG_AMT,0) > 0 then RP_INV_TOT_CHRG_AMT
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE >= shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_A_TOT_CHRG_AMT,0) > 0 then RP_INV_TOT_CHRG_AMT
+                else 0
+            end as RP_GRI_INV_TOT_CHRG_AMT,
+           case 
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE <  shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_9_LNH_CHRG_AMT,0) > 0 then RP_INV_LNH_CHRG_AMT
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE >= shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_A_LNH_CHRG_AMT,0) > 0 then RP_INV_LNH_CHRG_AMT
+                else 0
+            end as RP_GRI_INV_LNH_CHRG_AMT,
+           case 
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE <  shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_9_DSCNT_AMT,0) > 0 then RP_INV_DSCNT_AMT
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE >= shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_A_DSCNT_AMT,0) > 0 then RP_INV_DSCNT_AMT
+                else 0
+            end as RP_GRI_INV_DSCNT_AMT,
+           case 
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE <  shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_9_TOT_CHRG_AMT,0) > 0 then RP_GRI_9_TOT_CHRG_AMT
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE >= shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_A_TOT_CHRG_AMT,0) > 0 then RP_GRI_A_TOT_CHRG_AMT
+                else 0
+            end as RP_GRI_9A_TOT_CHRG_AMT,
+           case 
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE <  shpmt.GRI_EFF_DATE and rtgpass.RP_GRI_9_LNH_CHRG_AMT > 0 then RP_GRI_9_LNH_CHRG_AMT
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE >= shpmt.GRI_EFF_DATE and rtgpass.RP_GRI_A_LNH_CHRG_AMT > 0 then RP_GRI_A_LNH_CHRG_AMT
+                else 0
+            end as RP_GRI_9A_LNH_CHRG_AMT,
+           case 
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE <  shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_9_DSCNT_AMT,0) > 0 then RP_GRI_9_DSCNT_AMT
+                when shpmt.RTAR = 'CTS599' and pra.PA_CUST_VERS_EFF_DATE >= shpmt.GRI_EFF_DATE and ifnull(rtgpass.RP_GRI_A_DSCNT_AMT,0) > 0 then RP_GRI_A_DSCNT_AMT
+                else 0
+            end as RP_GRI_9A_DSCNT_AMT,
+           --  Commodity
+           cmdy.CMDY_NUM,
+           cmdy.CMDY_FAK_NUM,
+           cmdy.IS_SHPMT_FAK,
+           cmdy.CMDY_WGT,
+           cmdy.CMDY_ACTL_CLASS_WGT,
+           cmdy.CMDY_RTD_CLASS_WGT,
+           cmdy.FREIGHT_CLASS,
+           cmdy.RTD_AS_FREIGHT_CLASS,
+           cmdy.CMDY_WGT_BY_CLASS,
+           cmdy.PACKAGE,
+           cmdy.PROD_DESC,
+           cmdy.NMFC_ITEM_CODE,
+           --  Dimensions
+           case when dims.IS_SHPMT_LONG = 'Y' then 'Y' else 'N' end IS_SHPMT_LONG,
+           dims.SHPMT_LEN_MAX,
+           dims.SHPMT_HGT_MAX,
+           dims.SHPMT_WDTH_MAX,
+           --  Claims
+           case when clm.IS_SHPMT_CLM = 'Y' then 'Y' else 'N' end IS_SHPMT_CLM,
+           clm.TOT_CLM,
+           clm.CLM_AMT,
+           clm.ADJ_CLM_AMT,
+           clm.TOT_PCS_CLM,
+           clm.TOT_WEIGHT_CLM,
+           case when clm.IS_SHPMT_PD_CLM = 'Y' then 'Y' else 'N' end IS_SHPMT_PD_CLM,
+           clm.PD_CLM_NUM,
+           clm.PD_CLM_AMT,
+           --  Inspection and Reweigh Revenue - add 'N' to the indicators (can't get all 'N' due to join in the pass)
+           case when ins_rwgh.IS_SHPMT_INSPECT = 'Y' then 'Y' else 'N' end IS_SHPMT_INSPECT,
+           ins_rwgh.SHPMT_INSPECT_REV,
+           case when ins_rwgh.IS_SHPMT_REWEIGH = 'Y' then 'Y' else 'N' end IS_SHPMT_REWEIGH,
+           ins_rwgh.SHPMT_REWEIGH_REV,
+           ins_rwgh.SHPMT_REWEIGH_WGT,
+           -- Book Close	 - Shipment and Accessorial (FSC)                    
+           ifnull(bcshpmt.TOTAL_CHARGE_AMOUNT,0) as BOOK_CLOSE_TOT_CHARGE_AMT,
+           ifnull(bcacc.FSC_AMT,0)               as BOOK_CLOSE_FSC_AMT,
+           -- assumption : no change to non revenue amount
+           ifnull(bcshpmt.TOTAL_CHARGE_AMOUNT,0) - shpmt.NON_REVENUE                                                   as BOOK_CLOSE_NET_REVENUE,
+           ifnull(bcshpmt.TOTAL_CHARGE_AMOUNT,0) - shpmt.NON_REVENUE - ifnull(obi.OBI_AMT,0)                           as BOOK_CLOSE_NET_REVENUE_LESS_OBI,
+           ifnull(bcshpmt.TOTAL_CHARGE_AMOUNT,0) - shpmt.NON_REVENUE - ifnull(obi.OBI_AMT,0) - ifnull(bcacc.FSC_AMT,0) as BOOK_CLOSE_NET_REVENUE_LESS_OBI_FSC,
+           ifnull(bcshpmt.WEIGHT, 0) BOOK_CLOSE_WEIGHT,
+           ifnull(bcshpmt.SHPR_TO_CONS_MILE,0) BOOK_CLOSE_SHPR_TO_CONS_MILE,
+           -- Employee Assignments - Customer, Outbound, Inbound both As-Is and As-Was
+           empasis.PRMY_CUST_NBR_ASIS,
+           empasis.PRMY_CUST_MAD_CODE_ASIS,
+           empasis.PRMY_CUST_NAME1_ASIS,
+           empaswas.PRMY_CUST_NBR_ASWAS,
+           empaswas.PRMY_CUST_MAD_CODE_ASWAS,
+           empaswas.PRMY_CUST_NAME1_ASWAS,
+--           empaswasnew.PRMY_CUST_NBR_ASWAS_NEW,
+--           empaswasnew.PRMY_CUST_MAD_CODE_ASWAS_NEW,
+--           empaswasnew.PRMY_CUST_NAME1_ASWAS_NEW,
+           empasis.PA_SLS_EMP_NBR_ASIS,
+           empaswas.PA_SLS_EMP_NBR_ASWAS,
+--           empaswasnew.PA_SLS_EMP_NBR_ASWAS_NEW,
+           shpr.SLS_EMP_NBR_ASIS          as OTB_SLS_EMP_NBR_ASIS,
+--           shpr.SLS_EMP_NBR_ASIS_NEW      as OTB_SLS_EMP_NBR_ASIS_NEW,
+           otbaswas.SLS_EMP_NBR_ASWAS     as OTB_SLS_EMP_NBR_ASWAS,
+--           otbaswas.SLS_EMP_NBR_ASWAS_NEW as OTB_SLS_EMP_NBR_ASWAS_NEW,
+           cons.SLS_EMP_NBR_ASIS          as INB_SLS_EMP_NBR_ASIS,
+--           cons.SLS_EMP_NBR_ASIS_NEW      as INB_SLS_EMP_NBR_ASIS_NEW,
+           inbaswas.SLS_EMP_NBR_ASWAS     as INB_SLS_EMP_NBR_ASWAS,
+--           inbaswas.SLS_EMP_NBR_ASWAS_NEW as INB_SLS_EMP_NBR_ASWAS_NEW,
+           -- Back Office fields
+           bko.ARCHIVE_IND,
+           bko.DLVR_SIG_NM_TXT,
+           bko.DLVR_SIG_TMST,
+           bko.LST_MVMT_TMST,
+           bko.BOL_NBR,
+           bko.PO_NBR,
+           bko.SRN_TXT,
+           bko.LST_MVMT_STAT_CD,
+           bko.LST_MVMT_STAT_DESC,
+           exempt.EXEMPT_REASON_DESCRIPTION,
+           dlvrexcp.IS_DMGD_SHPMT,
+           dlvrexcp.IS_SHORT_SHPMT,
+           dlvrexcp.IS_OVER_SHPMT,
+           non_phys.NON_PHYSICAL_EXCP
+      from shpmt_detail shpmt
+      left join shpmt_cust_info                shpr     on shpr.CUSTOMER_ID            = shpmt.SHIPPER_ID
+      left join shpmt_cust_info                cons     on cons.CUSTOMER_ID            = shpmt.CONSIGNEE_ID
+      left join shpmt_cust_info                bill2    on bill2.CUSTOMER_ID           = shpmt.BILL2_ID
+      left join shpmt_as_entrd                 asentrd  on asentrd.SHPMT_INSTC_ID      = shpmt.SHPMT_INSTC_ID
+      left join shpmt_pa_cust                  pra      on pra.PRCNG_AGRMT_INSTC_ID    = shpmt.PRCNG_AGRMT_INSTC_ID
+      left join shpmt_div                      pradiv   on pradiv.PRCNG_AGRMT_INSTC_ID = shpmt.PRCNG_AGRMT_INSTC_ID and pradiv.CUST_FOR_DIV_ID = shpmt.CUST_FOR_DIV_ID
+      left join shpmt_sic                      origsic  on origsic.SIC_CODE            = shpmt.ORIGIN_SIC_CODE
+      left join shpmt_sic                      destsic  on destsic.SIC_CODE            = shpmt.DESTINATION_SIC_CODE
+      left join cartage_od_sic                 crtg     on crtg.SHPMT_INSTC_ID         = shpmt.SHPMT_INSTC_ID
+      left join dr_bol_imaged		           dr_bol   on dr_bol.SHP_INST_ID          = shpmt.SHPMT_INSTC_ID 														
+      left join shpmt_rtg                      rtg      on rtg.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join shpmt_obi                      obi      on obi.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join shpmt_accsrl                   accsrl   on accsrl.SHPMT_INSTC_ID       = shpmt.SHPMT_INSTC_ID
+      left join shpmt_cost                     cst      on cst.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join shpmt_rtg_pass                 rtgpass  on rtgpass.SHPMT_INSTC_ID      = shpmt.SHPMT_INSTC_ID
+      left join shpmt_cmdy                     cmdy     on cmdy.SHPMT_INSTC_ID         = shpmt.SHPMT_INSTC_ID
+      left join shpmt_dims                     dims     on dims.SHPMT_INSTC_ID         = shpmt.SHPMT_INSTC_ID
+      left join shpmt_pd_claim                 clm      on clm.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join shpmt_inspect_reweigh          ins_rwgh on ins_rwgh.SHPMT_INSTC_ID     = shpmt.SHPMT_INSTC_ID
+      left join shpmt_book_close_as_was        bcshpmt  on bcshpmt.SHPMT_INSTC_ID      = shpmt.SHPMT_INSTC_ID
+      left join shpmt_book_close_accsrl_as_was bcacc    on bcacc.SHPMT_INSTC_ID        = shpmt.SHPMT_INSTC_ID
+      left join shpmt_bko_fields               bko      on bko.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join shpmt_exempt_reason            exempt   on exempt.SHPMT_INSTC_ID       = shpmt.SHPMT_INSTC_ID
+      --  Employee assignment joins
+      left join shpmt_empasgnmt_pacust_asis       empasis     on empasis.PRCNG_AGRMT_INSTC_ID     = shpmt.PRCNG_AGRMT_INSTC_ID
+      left join shpmt_empasgnmt_pacust_aswas      empaswas    on empaswas.PRCNG_AGRMT_INSTC_ID    = shpmt.PRCNG_AGRMT_INSTC_ID and empaswas.PICKUP_DATE = shpmt.PICKUP_DATE
+--      left join shpmt_empasgnmt_pacust_aswas_new  empaswasnew on empaswasnew.PRCNG_AGRMT_INSTC_ID = shpmt.PRCNG_AGRMT_INSTC_ID and empaswasnew.PICKUP_DATE = shpmt.PICKUP_DATE
+       -----ADDED shpmt_non_phys_excp
+      left join shpmt_non_phys_excp               non_phys    on non_phys.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join shpmt_empasgnmt_pstl_cd_aswas     otbaswas    on otbaswas.CUSTOMER_ID             = shpmt.SHIPPER_ID           and otbaswas.PICKUP_DATE = shpmt.PICKUP_DATE
+      left join shpmt_empasgnmt_pstl_cd_aswas     inbaswas    on inbaswas.CUSTOMER_ID             = shpmt.CONSIGNEE_ID         and inbaswas.PICKUP_DATE = shpmt.PICKUP_DATE
+      left join shpmt_dlvrd_excp                  dlvrexcp    on dlvrexcp.SHPMT_INSTC_ID          = shpmt.SHPMT_INSTC_ID
+      left join lane_balance                      lb          on origsic.SIC_TERM_CODE            = lb.ORIGIN_SIC_TERM_CODE    and destsic.SIC_TERM_CODE = lb.DESTINATION_SIC_TERM_CODE    and lb.LANE_RANK = 1
+      left join lane_balance_as_was               lb_aw       on origsic.SIC_TERM_CODE            = lb_aw.ORIGIN_SIC_TERM_CODE and destsic.SIC_TERM_CODE = lb_aw.DESTINATION_SIC_TERM_CODE and shpmt.PICKUP_DATE between lb_aw.LANE_BALANCE_START_DATE and lb_aw.LANE_BALANCE_END_DATE
+      left join dynamic_shipment                  ds          on ds.LTL_SHIPMENT_INST_ID          = shpmt.SHPMT_INSTC_ID       and ds.DP_RANK = 1
+)
+
+select * from base_shpmt;
+
